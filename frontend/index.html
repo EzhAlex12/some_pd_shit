@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SGP CSI · Human Radar 3D</title>
+<style>
+  :root{
+    --bg:#05070a; --panel:#0a0f14; --line:#0f1a1e;
+    --green:#00ff62; --cyan:#2de2e6; --dim:#5b6b6e; --warn:#ff5c5c;
+    --txt:#cfe8e2; --grid:#0d2a24;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg); color:var(--txt);
+    font-family:"SF Mono","Consolas",ui-monospace,monospace;
+    overflow:hidden;
+  }
+  #scene{position:fixed;inset:0}
+  #scene.drag{cursor:grabbing}
+  #ui{
+    position:fixed;top:0;left:0;width:340px;height:100%;
+    background:linear-gradient(180deg,rgba(8,12,16,.96),rgba(5,7,10,.92));
+    border-right:1px solid var(--grid);
+    padding:16px;overflow-y:auto;backdrop-filter:blur(4px);z-index:10;
+  }
+  .brand{display:flex;align-items:center;gap:10px;margin-bottom:2px}
+  .brand img{width:34px;height:34px;border-radius:7px;object-fit:cover;border:1px solid var(--grid);box-shadow:0 0 12px rgba(0,255,98,.25)}
+  h1{font-size:17px;letter-spacing:3px;color:var(--green);text-shadow:0 0 12px rgba(0,255,98,.5)}
+  .sub{font-size:10px;color:var(--dim);letter-spacing:1px;margin-bottom:14px}
+  .card{background:var(--panel);border:1px solid var(--grid);border-radius:8px;padding:12px;margin-bottom:12px}
+  .card h2{font-size:10px;letter-spacing:2px;color:var(--cyan);text-transform:uppercase;margin-bottom:10px}
+  label{display:block;font-size:10px;color:var(--dim);margin:8px 0 3px}
+  input,select{width:100%;background:#05090c;border:1px solid var(--grid);color:var(--txt);padding:7px 8px;border-radius:6px;font:inherit;font-size:12px}
+  input:focus,select:focus{outline:none;border-color:var(--cyan)}
+  .row{display:flex;gap:8px}
+  .row>*{flex:1}
+  button{width:100%;background:#06120d;border:1px solid var(--green);color:var(--green);padding:9px;border-radius:6px;font:inherit;font-size:11px;letter-spacing:1px;cursor:pointer;text-transform:uppercase;transition:.15s}
+  button:hover{background:var(--green);color:#000;box-shadow:0 0 14px rgba(0,255,98,.5)}
+  button.ghost{border-color:var(--grid);color:var(--dim)}
+  button.ghost:hover{background:#0c1418;color:var(--cyan);box-shadow:none;border-color:var(--cyan)}
+  button.ghost.active{border-color:var(--cyan);color:var(--cyan);background:#0c1c20}
+  .pybtn{border-color:#ffb02e;color:#ffb02e;background:#1a1206}
+  .pybtn:hover{background:#ffb02e;color:#000;box-shadow:0 0 14px rgba(255,176,46,.5)}
+  .pybtn.active{background:#ffb02e;color:#000;box-shadow:0 0 16px rgba(255,176,46,.7)}
+  code{color:var(--cyan);font-size:10px}
+  .seg{display:flex;gap:6px}
+  .seg button{flex:1;font-size:10px;padding:7px 4px}
+  .slider{display:flex;align-items:center;gap:8px}
+  .slider input[type=range]{flex:1;accent-color:var(--cyan)}
+  .slider .val{width:42px;text-align:right;font-size:11px;color:var(--cyan)}
+  .node{margin-bottom:10px}
+  .node .top{display:flex;justify-content:space-between;font-size:10px;margin-bottom:3px}
+  .node .name{color:var(--txt)}
+  .node .rssi{color:var(--dim)}
+  .bar{height:8px;background:#0a1418;border-radius:4px;overflow:hidden}
+  .bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--cyan),var(--green));transition:width .1s}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--warn);margin-right:5px}
+  .dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
+  /* position editor */
+  .npos{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+  .npos .lbl{width:34px;font-size:10px;color:var(--green)}
+  .npos input{padding:5px 6px;font-size:11px;text-align:center}
+  .npos .u{font-size:9px;color:var(--dim)}
+  .dtable{font-size:10px;line-height:1.7;color:var(--dim)}
+  .dtable b{color:var(--cyan);font-weight:normal}
+  #hud{position:fixed;top:14px;right:14px;text-align:right;z-index:10;font-size:11px;line-height:1.7}
+  #hud .big{font-size:13px;letter-spacing:2px}
+  .presence{color:var(--dim)}
+  .presence.live{color:var(--green);text-shadow:0 0 10px rgba(0,255,98,.6)}
+  .pill{display:inline-block;padding:2px 8px;border:1px solid var(--grid);border-radius:20px;font-size:10px;color:var(--dim)}
+  .pill.ok{color:var(--green);border-color:var(--green)}
+  .pill.demo{color:var(--cyan);border-color:var(--cyan)}
+  .coords{color:var(--cyan)}
+  .act{color:#ffb02e;font-size:11px;letter-spacing:1px;min-height:14px}
+  #hint{position:fixed;bottom:14px;left:356px;z-index:10;font-size:10px;color:var(--dim)}
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);
+    background:#0c1418;border:1px solid var(--grid);color:var(--txt);padding:10px 18px;
+    border-radius:8px;font-size:12px;z-index:30;opacity:0;pointer-events:none;transition:.25s}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .toast.ok{border-color:var(--green);color:var(--green);box-shadow:0 0 16px rgba(0,255,98,.3)}
+  .pyhelp{position:fixed;inset:0;background:rgba(2,4,6,.82);z-index:40;display:none;
+    align-items:center;justify-content:center;backdrop-filter:blur(3px)}
+  .pyhelp .box{background:var(--panel);border:1px solid #ffb02e;border-radius:12px;
+    padding:26px 28px;max-width:420px;text-align:center;box-shadow:0 0 40px rgba(255,176,46,.25)}
+  .pyhelp h3{color:#ffb02e;font-size:15px;letter-spacing:1px;margin-bottom:12px}
+  .pyhelp p{font-size:12px;color:var(--txt);line-height:1.6;margin-bottom:10px}
+  .pyhelp .path{background:#05090c;border:1px solid var(--grid);border-radius:6px;
+    padding:10px;color:var(--cyan);font-size:12px}
+  .pyhelp .small{color:var(--dim);font-size:10.5px}
+  .pyhelp button{margin-top:6px;border-color:#ffb02e;color:#ffb02e;background:#1a1206}
+</style>
+</head>
+<body>
+<div id="scene"></div>
+
+<div id="ui">
+  <div class="brand">
+    <img id="logo" src="https://cdn.shopify.com/s/files/1/1057/9807/4700/files/IMG_20260327_183134_522.jpg?v=1778727273" alt="SGP">
+    <h1>SGP CSI</h1>
+  </div>
+  <div class="sub">HUMAN DETECTION VIA RADIO WAVES · 3D</div>
+
+  <div class="card">
+    <h2>View (camera)</h2>
+    <div class="seg">
+      <button class="ghost" id="vDrone">Drone</button>
+      <button class="ghost" id="vTop">Top-down</button>
+      <button class="ghost active" id="vFree">Free</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Connection</h2>
+    <label>Nodes (auto: sgpcsi-0..3.local)</label>
+    <input id="ip" placeholder="empty = auto · or 4 comma-separated IPs" />
+    <div class="row" style="margin-top:10px">
+      <button id="connect">Connect</button>
+      <button id="demo" class="ghost">Demo Mode</button>
+    </div>
+    <button id="pybtn" class="pybtn" style="margin-top:8px">⚡ PYTHON POWER</button>
+    <div class="sub" style="margin:6px 0 0">
+      Advanced filters (Kalman + posture). Requires running <code>python/tracker.py</code>.
+    </div>
+    <div style="margin-top:8px" class="pill" id="connState">DISCONNECTED</div>
+  </div>
+
+  <div class="card">
+    <h2>Nodes (motion energy)</h2>
+    <div id="nodes"></div>
+  </div>
+
+  <div class="card">
+    <h2>Room and node positions</h2>
+    <div class="row">
+      <div><label>Room width X</label><input id="roomW" type="number" value="5" step="0.1"></div>
+      <div><label>Room length Y</label><input id="roomH" type="number" value="4" step="0.1"></div>
+    </div>
+    <label style="margin-top:10px">Coordinates (m) — X / Y / height Z</label>
+    <div id="posEditor"></div>
+    <div class="sub" style="margin:6px 0 0">
+      Drag the nodes over the floor plane to place them where they are in the room.
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Distances between nodes (m)</h2>
+    <div class="dtable" id="dist"></div>
+  </div>
+
+  <div class="card">
+    <h2>Triangulation tuning</h2>
+    <label>Sharpness (clustering)</label>
+    <div class="slider"><input id="sharp" type="range" min="1" max="8" step="0.5" value="3"><span class="val" id="sharpV">3</span></div>
+    <label>Position smoothing</label>
+    <div class="slider"><input id="smooth" type="range" min="0" max="0.95" step="0.05" value="0.8"><span class="val" id="smoothV">0.8</span></div>
+    <label>Presence threshold (0–1)</label>
+    <div class="slider"><input id="thr" type="range" min="0" max="1" step="0.02" value="0.28"><span class="val" id="thrV">0.28</span></div>
+    <label>Posture sensitivity (crouching)</label>
+    <div class="slider"><input id="postSens" type="range" min="0" max="3" step="0.1" value="1"><span class="val" id="postSensV">1</span></div>
+    <button class="ghost" id="recal" style="margin-top:12px">Recalibrate empty environment</button>
+  </div>
+</div>
+
+<div id="hud">
+  <div class="big presence" id="presence">NO PRESENCE</div>
+  <div class="coords" id="coords">x: --  y: --</div>
+  <div class="presence" id="pose">posture: --</div>
+  <div class="act" id="act"></div>
+  <div><span class="pill" id="mode">—</span></div>
+  <div class="presence" id="fps" style="font-size:10px">-- fps</div>
+</div>
+<div id="hint">mouse: orbit · wheel: zoom · drag a green node to reposition it</div>
+
+<div id="toast" class="toast"></div>
+<div id="pyhelp" class="pyhelp">
+  <div class="box">
+    <h3>⚡ Python engine not detected</h3>
+    <p>For the advanced filters (Kalman + AI) first start the engine with a
+       <b>double click</b>:</p>
+    <p class="path">wifi&nbsp;csi ▸ python ▸<br><b>START-TRACKER-MAC.command</b></p>
+    <p class="small">A Terminal will open; this web app will connect on its own.<br>
+       Just want to try it without the boards? use <b>TEST-WITHOUT-BOARDS-MAC.command</b>.</p>
+    <button onclick="document.getElementById('pyhelp').style.display='none'">Got it</button>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ====================== STATE ======================
+const NODE_NAMES = ['N0·MASTER','N1','N2','N3'];
+let room = { w:5, h:4 };
+// editable position of each node: {x,y,z}  (x,y on the floor plane; z = height)
+let nodes3 = [
+  {x:0, y:0, z:1.2}, {x:5, y:0, z:1.2}, {x:5, y:4, z:1.2}, {x:0, y:4, z:1.2},
+];
+let energies=[0,0,0,0], rssis=[0,0,0,0], online=[false,false,false,false];
+// per-node autocalibration: each one has its own scale -> we normalize to 0..1
+let neMin=[1e9,1e9,1e9,1e9], neMax=[1e-3,1e-3,1e-3,1e-3], ne=[0,0,0,0];
+let person = new THREE.Vector2(2.5,2), target = new THREE.Vector2(2.5,2);
+let prevP = new THREE.Vector2(2.5,2);
+let present=false, demoMode=false, demoT=0;
+let crouchAmt=0, walkPhase=0, heading=0, eMax=0.001, demoCrouch=0;
+const cfg = { sharp:3, smooth:0.8, thr:0.28, postSens:1.0 };
+const lerp=(a,b,t)=>a+(b-a)*t;
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+
+// restore saved config
+try{ const s=JSON.parse(localStorage.getItem('csi_cfg')||'{}');
+  if(s.nodes3) nodes3=s.nodes3; if(s.room) room=s.room; }catch(e){}
+
+function saveCfg(){ localStorage.setItem('csi_cfg', JSON.stringify({nodes3,room})); }
+
+// ====================== THREE.JS ======================
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x05070a, 0.04);
+const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 300);
+const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+const sceneEl = document.getElementById('scene');
+sceneEl.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+scene.add(new THREE.AmbientLight(0x335544, 0.7));
+const key = new THREE.PointLight(0x00ff88, 1.2, 60); key.position.set(3,9,3); scene.add(key);
+
+const roomGroup = new THREE.Group(); scene.add(roomGroup);
+const linkGroup = new THREE.Group(); scene.add(linkGroup);   // lines + distances
+let nodeMeshes=[], nodeGlows=[], nodeLabels=[], sk, personGlow, trail, trailPts=[];
+
+function buildRoom(){
+  roomGroup.clear(); nodeMeshes=[]; nodeGlows=[]; nodeLabels=[];
+  const { w, h } = room;
+
+  const grid = new THREE.GridHelper(Math.max(w,h)*1.6, Math.round(Math.max(w,h)*2), 0x0d3a30, 0x07201b);
+  grid.position.set(w/2,0,h/2); roomGroup.add(grid);
+
+  const floor = new THREE.Mesh(
+    new THREE.PlaneGeometry(w,h),
+    new THREE.MeshBasicMaterial({ color:0x041410, transparent:true, opacity:0.5, side:THREE.DoubleSide })
+  );
+  floor.rotation.x=-Math.PI/2; floor.position.set(w/2,0,h/2); roomGroup.add(floor);
+
+  // wireframe walls
+  const wallMat=new THREE.LineBasicMaterial({color:0x0a4a3c}); const H=2.6;
+  const c=[[0,0],[w,0],[w,h],[0,h]];
+  for(let i=0;i<4;i++){ const[x1,z1]=c[i],[x2,z2]=c[(i+1)%4];
+    roomGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(x1,0,z1),new THREE.Vector3(x1,H,z1),
+      new THREE.Vector3(x2,H,z2),new THREE.Vector3(x2,0,z2)]),wallMat)); }
+
+  // nodes
+  for(let i=0;i<4;i++){
+    const n=nodes3[i];
+    const m=new THREE.Mesh(new THREE.BoxGeometry(0.2,0.2,0.2),
+      new THREE.MeshBasicMaterial({color:0x00ff62}));
+    m.userData.nodeIndex=i; m.position.set(n.x,n.z,n.y); roomGroup.add(m); nodeMeshes.push(m);
+
+    // mast down to the floor (to show the height)
+    roomGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(n.x,0,n.y),new THREE.Vector3(n.x,n.z,n.y)]),
+      new THREE.LineBasicMaterial({color:0x0a4a3c})));
+
+    const glow=new THREE.Mesh(new THREE.SphereGeometry(0.3,16,16),
+      new THREE.MeshBasicMaterial({color:0x00ff62,transparent:true,opacity:0.15}));
+    glow.position.set(n.x,n.z,n.y); roomGroup.add(glow); nodeGlows.push(glow);
+
+    const lbl=makeLabel(NODE_NAMES[i],n.x,n.z+0.4,n.y); roomGroup.add(lbl); nodeLabels.push(lbl);
+  }
+
+  sk=buildSkeleton(); roomGroup.add(sk.group);
+  personGlow=new THREE.Mesh(new THREE.SphereGeometry(0.6,20,20),
+    new THREE.MeshBasicMaterial({color:0x2de2e6,transparent:true,opacity:0.18}));
+  roomGroup.add(personGlow);
+
+  trailPts=[]; const tg=new THREE.BufferGeometry();
+  tg.setAttribute('position',new THREE.BufferAttribute(new Float32Array(60*3),3));
+  trail=new THREE.Line(tg,new THREE.LineBasicMaterial({color:0x2de2e6,transparent:true,opacity:0.4}));
+  roomGroup.add(trail);
+
+  updateLinks();
+}
+
+function updateLinks(){
+  linkGroup.clear();
+  // perimeter lines 0-1-2-3-0 with distance label
+  const seq=[[0,1],[1,2],[2,3],[3,0]];
+  for(const [a,b] of seq){
+    const na=nodes3[a], nb=nodes3[b];
+    linkGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(na.x,na.z,na.y),new THREE.Vector3(nb.x,nb.z,nb.y)]),
+      new THREE.LineBasicMaterial({color:0x12463a,transparent:true,opacity:0.7})));
+    const d=dist2D(a,b);
+    const mx=(na.x+nb.x)/2, my=(na.y+nb.y)/2, mz=(na.z+nb.z)/2+0.15;
+    linkGroup.add(makeLabel(d.toFixed(2)+' m', mx, mz, my, '#2de2e6'));
+  }
+}
+
+function dist2D(a,b){ return Math.hypot(nodes3[a].x-nodes3[b].x, nodes3[a].y-nodes3[b].y); }
+
+// ====================== SKELETON ======================
+function buildSkeleton(){
+  const g=new THREE.Group();
+  const bone =new THREE.MeshBasicMaterial({color:0x2de2e6,transparent:true,opacity:0.92});
+  const joint=new THREE.MeshBasicMaterial({color:0xaff7ff});
+  // segment hanging toward -Y from a pivot (arms/legs)
+  function seg(parent,len,r){
+    const piv=new THREE.Object3D(); parent.add(piv);
+    const cyl=new THREE.Mesh(new THREE.CylinderGeometry(r*0.7,r,len,8),bone);
+    cyl.position.y=-len/2; piv.add(cyl);
+    piv.add(new THREE.Mesh(new THREE.SphereGeometry(r*1.15,10,10),joint)); // joint
+    piv.userData.len=len; return piv;
+  }
+
+  const pelvis=new THREE.Object3D(); g.add(pelvis);
+  pelvis.add(new THREE.Mesh(new THREE.SphereGeometry(0.08,12,12),joint)); // hip
+
+  // spine (pivot to lean the torso)
+  const spinePivot=new THREE.Object3D(); pelvis.add(spinePivot);
+  const spineLen=0.5;
+  const spineMesh=new THREE.Mesh(new THREE.CylinderGeometry(0.045,0.07,spineLen,8),bone);
+  spineMesh.position.y=spineLen/2; spinePivot.add(spineMesh);
+  const chest=new THREE.Object3D(); chest.position.y=spineLen; spinePivot.add(chest);
+  chest.add(new THREE.Mesh(new THREE.SphereGeometry(0.07,12,12),joint)); // chest/shoulders
+
+  // neck + head
+  const neck=new THREE.Mesh(new THREE.CylinderGeometry(0.03,0.03,0.1,8),bone);
+  neck.position.y=0.07; chest.add(neck);
+  const head=new THREE.Mesh(new THREE.SphereGeometry(0.13,18,18),
+    new THREE.MeshBasicMaterial({color:0x2de2e6,transparent:true,opacity:0.85}));
+  head.position.y=0.25; chest.add(head);
+
+  // arms
+  const shL=new THREE.Object3D(); shL.position.set(-0.2,0.02,0); chest.add(shL);
+  const elL=seg(shL,0.3,0.04); const foreL=seg(elL,0.28,0.035); foreL.position.y=-0.3;
+  const shR=new THREE.Object3D(); shR.position.set( 0.2,0.02,0); chest.add(shR);
+  const elR=seg(shR,0.3,0.04); const foreR=seg(elR,0.28,0.035); foreR.position.y=-0.3;
+
+  // legs
+  const hipL=seg(pelvis,0.45,0.055); hipL.position.set(-0.1,0,0);
+  const kneeL=seg(hipL,0.45,0.05);  kneeL.position.y=-0.45;
+  const hipR=seg(pelvis,0.45,0.055); hipR.position.set( 0.1,0,0);
+  const kneeR=seg(hipR,0.45,0.05);  kneeR.position.y=-0.45;
+
+  const mats=[bone,head.material];
+  return { group:g, pelvis, spinePivot, head, shL, shR, elL, elR, hipL, hipR, kneeL, kneeR, mats };
+}
+
+// sets the skeleton pose: c=crouch(0..1), wp=step phase, spd=speed, on=presence
+function poseSkeleton(c, wp, spd, on){
+  const s=sk;
+  s.pelvis.position.y      = lerp(0.92, 0.5, c);
+  s.spinePivot.rotation.x  = lerp(0.0, 0.55, c);
+  const w = (c<0.6) ? clamp(spd*7,0,1) : 0;          // step amplitude
+  // legs (walking + flexion)
+  s.hipL.rotation.x  = lerp(0,-1.15,c) + Math.sin(wp)*0.5*w;
+  s.hipR.rotation.x  = lerp(0,-1.15,c) - Math.sin(wp)*0.5*w;
+  s.kneeL.rotation.x = lerp(0, 1.75,c) + Math.max(0,-Math.sin(wp))*0.7*w;
+  s.kneeR.rotation.x = lerp(0, 1.75,c) + Math.max(0, Math.sin(wp))*0.7*w;
+  // arms (opposite swing + forward when crouching)
+  s.shL.rotation.x = lerp(0.12,-0.6,c) - Math.sin(wp)*0.45*w;
+  s.shR.rotation.x = lerp(0.12,-0.6,c) + Math.sin(wp)*0.45*w;
+  s.elL.rotation.x = -0.25 - c*0.5;
+  s.elR.rotation.x = -0.25 - c*0.5;
+  s.head.position.x = Math.sin(wp*0.5)*0.01;          // slight head bob
+  // orientation toward the movement + presence
+  s.group.rotation.y = heading;
+  const op = on ? 1 : 0.22;
+  for(const m of s.mats) m.opacity = op*(m===s.mats[1]?0.85:0.92);
+}
+
+function makeLabel(text,x,y,z,color='#00ff62'){
+  const cv=document.createElement('canvas'); cv.width=160; cv.height=36;
+  const g=cv.getContext('2d'); g.fillStyle=color; g.font='22px monospace'; g.textAlign='center';
+  g.fillText(text,80,25);
+  const spr=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(cv),transparent:true}));
+  spr.position.set(x,y,z); spr.scale.set(1.1,0.25,1); return spr;
+}
+
+// ====================== CAMERAS (views) ======================
+function setView(name){
+  const {w,h}=room, cx=w/2, cz=h/2, span=Math.max(w,h);
+  controls.target.set(cx,0.6,cz);
+  if(name==='top'){            // pure top-down
+    camera.position.set(cx, span*1.6+4, cz+0.001);
+  }else if(name==='drone'){    // drone: high and steeply tilted
+    camera.position.set(cx, span*1.3+3, cz+span*0.9);
+  }else{                        // free / iso
+    camera.position.set(cx+span*0.9, span*0.9+2, cz+span*1.1);
+  }
+  ['vDrone','vTop','vFree'].forEach(id=>document.getElementById(id).classList.remove('active'));
+  document.getElementById(name==='top'?'vTop':name==='drone'?'vDrone':'vFree').classList.add('active');
+}
+
+// ====================== DRAGGING NODES ======================
+const ray=new THREE.Raycaster(), ptr=new THREE.Vector2();
+const ground=new THREE.Plane(new THREE.Vector3(0,1,0),0);
+let dragIdx=-1, hit=new THREE.Vector3();
+
+function ptrPos(e){ const r=renderer.domElement.getBoundingClientRect();
+  ptr.x=((e.clientX-r.left)/r.width)*2-1; ptr.y=-((e.clientY-r.top)/r.height)*2+1; }
+
+renderer.domElement.addEventListener('pointerdown',e=>{
+  ptrPos(e); ray.setFromCamera(ptr,camera);
+  const hits=ray.intersectObjects(nodeMeshes,false);
+  if(hits.length){ dragIdx=hits[0].object.userData.nodeIndex; controls.enabled=false; sceneEl.classList.add('drag'); }
+});
+renderer.domElement.addEventListener('pointermove',e=>{
+  if(dragIdx<0) return;
+  ptrPos(e); ray.setFromCamera(ptr,camera);
+  if(ray.ray.intersectPlane(ground,hit)){
+    nodes3[dragIdx].x=Math.round(hit.x*100)/100;
+    nodes3[dragIdx].y=Math.round(hit.z*100)/100;
+    syncNodeMesh(dragIdx); updateLinks(); refreshPosInputs(); updateDistTable();
+  }
+});
+addEventListener('pointerup',()=>{ if(dragIdx>=0){ dragIdx=-1; controls.enabled=true; sceneEl.classList.remove('drag'); saveCfg(); sendPyConfig(); } });
+
+function syncNodeMesh(i){
+  const n=nodes3[i];
+  nodeMeshes[i].position.set(n.x,n.z,n.y);
+  nodeGlows[i].position.set(n.x,n.z,n.y);
+  nodeLabels[i].position.set(n.x,n.z+0.4,n.y);
+}
+
+// ====================== TRIANGULATION ======================
+// autocalibration: each node learns its own floor (min) and its peak (max)
+// and we return ne[i] in 0..1, so that ALL nodes are comparable.
+function calibrate(){
+  for(let i=0;i<4;i++){
+    const e=energies[i];
+    if(neMin[i]>1e8){ neMin[i]=e; neMax[i]=e+1e-3; ne[i]=0; continue; }  // first sample
+    // floor (empty environment): drops fast, rises very slowly
+    if(e<neMin[i]) neMin[i]+=0.08*(e-neMin[i]); else neMin[i]+=0.0015*(e-neMin[i]);
+    // peak (person very close): rises instantly, decays slowly
+    if(e>neMax[i]) neMax[i]=e; else neMax[i]+=0.0020*(e-neMax[i]);
+    if(neMax[i]<neMin[i]+1e-3) neMax[i]=neMin[i]+1e-3;
+    ne[i]=clamp((e-neMin[i])/(neMax[i]-neMin[i]),0,1);
+  }
+}
+
+function triangulate(){
+  calibrate();
+
+  // weight = NORMALIZED energy raised to "sharpness" (emphasizes the dominant node)
+  let w=[0,0,0,0], sum=0, maxN=0, sumNe=0, dom=0;
+  for(let i=0;i<4;i++){
+    maxN=Math.max(maxN,ne[i]); sumNe+=ne[i];
+    if(ne[i]>ne[dom]) dom=i;
+    w[i]=Math.pow(ne[i],cfg.sharp); sum+=w[i];
+  }
+  // presence: the most active node exceeds the threshold (on a 0..1 scale)
+  present = maxN > cfg.thr;
+
+  if(sum>1e-6 && present){
+    let tx=0,ty=0;
+    for(let i=0;i<4;i++){ tx+=w[i]*nodes3[i].x; ty+=w[i]*nodes3[i].y; }
+    tx/=sum; ty/=sum;
+    // "signal at the maximum = person there": if one node clearly dominates, we pull
+    // the estimate toward it (so it reaches the corners, instead of staying in the center)
+    const dominance = sumNe>1e-6 ? ne[dom]/sumNe : 0;   // 0.25=all equal, 1=only one
+    const pull = clamp((dominance-0.30)/0.45,0,1)*0.6;  // up to 60% toward the node
+    tx=tx*(1-pull)+nodes3[dom].x*pull;
+    ty=ty*(1-pull)+nodes3[dom].y*pull;
+    target.set(tx,ty);
+  }
+
+  // temporal filter: smoothing + speed limit (anti-jump)
+  const a=1-cfg.smooth;
+  let nx=lerp(person.x,target.x,a), ny=lerp(person.y,target.y,a);
+  const maxStep=0.25;                                   // m per frame
+  const dx=nx-person.x, dy=ny-person.y, d=Math.hypot(dx,dy);
+  if(d>maxStep){ nx=person.x+dx/d*maxStep; ny=person.y+dy/d*maxStep; }
+  person.set(nx,ny);
+}
+
+// ====================== DATA ======================
+// each node is an independent WebSocket: the app connects to all 4 at once
+const DEFAULT_HOSTS=['sgpcsi-0.local','sgpcsi-1.local','sgpcsi-2.local','sgpcsi-3.local'];
+let wantLive=true;
+let conns=[null,null,null,null];
+let rcTimer=[null,null,null,null];
+let lastMsg=[0,0,0,0];
+
+// in the field you can leave it empty (auto) or enter 4 comma-separated IPs/hosts
+function hostFor(i){
+  const v=ip_in.value.trim();
+  if(!v) return DEFAULT_HOSTS[i];
+  const parts=v.split(',').map(s=>s.trim()).filter(Boolean);
+  return parts[i] || DEFAULT_HOSTS[i];
+}
+
+function connect(){ wantLive=true; for(let i=0;i<4;i++) connectNode(i); }
+
+function connectNode(i){
+  clearTimeout(rcTimer[i]);
+  if(conns[i]){ try{ conns[i].onclose=null; conns[i].close(); }catch(e){} conns[i]=null; }
+  let w;
+  try{ w=new WebSocket(`ws://${hostFor(i)}:81`); }
+  catch(e){ scheduleReconnect(i); return; }
+  conns[i]=w;
+  w.onmessage=ev=>{ try{ const d=JSON.parse(ev.data);
+    energies[i]=d.e; rssis[i]=d.rssi; lastMsg[i]=performance.now();
+  }catch(e){} };
+  w.onclose=()=>{ conns[i]=null; scheduleReconnect(i); };
+  w.onerror=()=>{ try{ w.close(); }catch(e){} };
+}
+function scheduleReconnect(i){
+  if(!wantLive) return;
+  clearTimeout(rcTimer[i]);
+  rcTimer[i]=setTimeout(()=>connectNode(i), 3000);   // retry that node
+}
+function stopLive(){
+  wantLive=false;
+  for(let i=0;i<4;i++){ clearTimeout(rcTimer[i]);
+    if(conns[i]){ try{ conns[i].onclose=null; conns[i].close(); }catch(e){} conns[i]=null; } }
+}
+
+function startDemo(){
+  demoMode=true; modeEl.textContent='SIMULATION'; modeEl.className='pill demo';
+}
+
+// ====================== PYTHON POWER MODE ======================
+// A Python backend (python/tracker.py) connects to the 4 nodes, applies
+// filters (2D Kalman + least-squares trilateration + posture) and serves
+// us a SINGLE already-processed WebSocket. Here we just consume it.
+const PY_URL='ws://localhost:8765';
+let pyMode=false, pyWs=null, pyData=null, pyLastMsg=0, pyRc=null, pyCheck=null;
+
+function toast(msg, ok){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.className='toast show'+(ok?' ok':'');
+  clearTimeout(toast._t); toast._t=setTimeout(()=>t.className='toast',2600);
+}
+
+function sendPyConfig(){
+  if(!pyWs || pyWs.readyState!==1) return;
+  pyWs.send(JSON.stringify({type:'config',
+    room:{w:room.w,h:room.h},
+    nodes:nodes3.map(n=>({x:n.x,y:n.y,z:n.z}))}));   // same layout as the web app
+}
+function connectPython(){
+  clearTimeout(pyRc);
+  if(pyWs){ try{ pyWs.onclose=null; pyWs.close(); }catch(e){} pyWs=null; }
+  try{ pyWs=new WebSocket(PY_URL); }
+  catch(e){ pyRc=setTimeout(connectPython,3000); return; }
+  pyWs.onopen=()=>{ clearTimeout(pyCheck); sendPyConfig();
+    document.getElementById('pyhelp').style.display='none';
+    toast('Python connected ✓', true); };
+  pyWs.onmessage=ev=>{ try{ const d=JSON.parse(ev.data);
+    if(d.type==='track'){ pyData=d; pyLastMsg=performance.now(); } }catch(e){} };
+  pyWs.onclose=()=>{ pyWs=null; if(pyMode) pyRc=setTimeout(connectPython,3000); };
+  pyWs.onerror=()=>{ try{ pyWs.close(); }catch(e){} };
+}
+function enablePython(on){
+  pyMode=on;
+  document.getElementById('pybtn').classList.toggle('active',on);
+  if(on){
+    stopLive(); connectPython();                     // cut off direct mode
+    toast('Connecting to the Python engine…');
+    // if there's no connection in ~3 s, it means the tracker isn't running
+    clearTimeout(pyCheck);
+    pyCheck=setTimeout(()=>{
+      if(!pyWs || pyWs.readyState!==1){
+        document.getElementById('pyhelp').style.display='flex';
+      }
+    }, 3000);
+  } else {
+    clearTimeout(pyRc); clearTimeout(pyCheck);
+    if(pyWs){ try{ pyWs.onclose=null; pyWs.close(); }catch(e){} pyWs=null; }
+    pyData=null; connect();                          // go back to direct mode
+    toast('Direct mode');
+  }
+}
+function demoStep(dt){
+  demoT+=dt;
+  const px=room.w*0.5+room.w*0.32*Math.sin(demoT*0.45);
+  const py=room.h*0.5+room.h*0.32*Math.sin(demoT*0.63+1.2);
+  // crouches down every so often
+  demoCrouch = clamp((Math.sin(demoT*0.5)-0.4)*2.5, 0, 1);
+  const tall = 1 - demoCrouch*0.6;   // crouching disturbs less
+  for(let i=0;i<4;i++){
+    const d=Math.hypot(nodes3[i].x-px,nodes3[i].y-py);
+    energies[i]=(1.6/(d*d+0.4))*tall + Math.sin(demoT*7+i)*0.04;
+    rssis[i]=-45-Math.round(d*4);
+  }
+}
+
+// ====================== UI ======================
+const ip_in=document.getElementById('ip'), nodesEl=document.getElementById('nodes');
+const roomW=document.getElementById('roomW'), roomH=document.getElementById('roomH');
+const modeEl=document.getElementById('mode'), connEl=document.getElementById('connState');
+const presEl=document.getElementById('presence'), coordEl=document.getElementById('coords');
+const fpsEl=document.getElementById('fps'), distEl=document.getElementById('dist');
+const poseEl=document.getElementById('pose');
+const actEl=document.getElementById('act');
+const posEd=document.getElementById('posEditor');
+function setConn(t,cls){ connEl.textContent=t; connEl.className='pill '+(cls||''); }
+
+// energy bars
+const bars=[];
+for(let i=0;i<4;i++){
+  const d=document.createElement('div'); d.className='node';
+  d.innerHTML=`<div class="top"><span class="name"><span class="dot" id="dot${i}"></span>${NODE_NAMES[i]}</span><span class="rssi" id="rssi${i}">-- dBm</span></div><div class="bar"><i id="bar${i}"></i></div>`;
+  nodesEl.appendChild(d);
+  bars.push({bar:d.querySelector(`#bar${i}`),rssi:d.querySelector(`#rssi${i}`),dot:d.querySelector(`#dot${i}`)});
+}
+
+// per-node coordinate editor
+const posInputs=[];
+for(let i=0;i<4;i++){
+  const r=document.createElement('div'); r.className='npos';
+  r.innerHTML=`<span class="lbl">N${i}</span>
+    <input type="number" step="0.1" id="nx${i}"><input type="number" step="0.1" id="ny${i}"><input type="number" step="0.1" id="nz${i}">`;
+  posEd.appendChild(r);
+  const nx=r.querySelector(`#nx${i}`),ny=r.querySelector(`#ny${i}`),nz=r.querySelector(`#nz${i}`);
+  const upd=()=>{ nodes3[i].x=parseFloat(nx.value)||0; nodes3[i].y=parseFloat(ny.value)||0; nodes3[i].z=parseFloat(nz.value)||0;
+    syncNodeMesh(i); updateLinks(); updateDistTable(); saveCfg(); sendPyConfig(); };
+  nx.onchange=ny.onchange=nz.onchange=upd;
+  posInputs.push({nx,ny,nz});
+}
+function refreshPosInputs(){ for(let i=0;i<4;i++){ const n=nodes3[i];
+  posInputs[i].nx.value=n.x; posInputs[i].ny.value=n.y; posInputs[i].nz.value=n.z; } }
+
+function updateDistTable(){
+  const pairs=[[0,1],[1,2],[2,3],[3,0],[0,2],[1,3]];
+  distEl.innerHTML=pairs.map(([a,b])=>`N${a}↔N${b} <b>${dist2D(a,b).toFixed(2)}</b>`).join(' · ');
+}
+
+document.getElementById('connect').onclick=()=>{ if(pyMode) enablePython(false); else connect(); };
+document.getElementById('demo').onclick=()=>{
+  if(pyMode){ pyMode=false; document.getElementById('pybtn').classList.remove('active');
+    clearTimeout(pyRc); if(pyWs){ try{pyWs.onclose=null;pyWs.close();}catch(e){} pyWs=null; } pyData=null; }
+  stopLive(); setConn('DEMO','demo'); startDemo(); };
+document.getElementById('pybtn').onclick=()=>enablePython(!pyMode);
+document.getElementById('recal').onclick=()=>{ for(let i=0;i<4;i++){ neMin[i]=energies[i]; neMax[i]=energies[i]+1e-3; } };
+document.getElementById('vDrone').onclick=()=>setView('drone');
+document.getElementById('vTop').onclick=()=>setView('top');
+document.getElementById('vFree').onclick=()=>setView('free');
+
+roomW.value=room.w; roomH.value=room.h;
+roomW.onchange=roomH.onchange=()=>{ room.w=parseFloat(roomW.value)||5; room.h=parseFloat(roomH.value)||4; buildRoom(); saveCfg(); sendPyConfig(); };
+
+function bindSlider(id,k){ const s=document.getElementById(id),v=document.getElementById(id+'V');
+  s.oninput=()=>{ cfg[k]=parseFloat(s.value); v.textContent=s.value; }; }
+bindSlider('sharp','sharp'); bindSlider('smooth','smooth'); bindSlider('thr','thr'); bindSlider('postSens','postSens');
+
+ip_in.value=localStorage.getItem('csi_ip')||'';
+ip_in.onchange=()=>localStorage.setItem('csi_ip',ip_in.value);
+
+// ====================== STARTUP ======================
+buildRoom(); refreshPosInputs(); updateDistTable(); setView('free');
+startDemo();      // show something right away
+connect();        // and connect on its own to the master (sgpcsi.local)
+
+let last=performance.now(), fpsAvg=60;
+function animate(now){
+  const dt=Math.min(0.05,(now-last)/1000); last=now; fpsAvg=fpsAvg*0.9+(1/dt)*0.1;
+
+  // ---- data source: Python (advanced filtering) or direct ----
+  const usingPy = pyMode && pyData && (now-pyLastMsg)<2000;
+
+  if(usingPy){
+    // Python already delivers FILTERED position, presence and posture (Kalman, etc.)
+    for(let i=0;i<4;i++){ const n=(pyData.nodes&&pyData.nodes[i])||{};
+      ne[i]=n.ne||0; rssis[i]=n.rssi||0; online[i]=!!n.on; }
+    present=!!pyData.present;
+    if(present) target.set(pyData.x, pyData.y);
+    person.lerp(target, 0.5);                       // already comes smoothed from Python
+    demoMode=false;
+    modeEl.textContent='PYTHON'; modeEl.className='pill ok';
+    setConn('PYTHON ✓ (Kalman)','ok');
+  } else if(pyMode){
+    // python enabled but no data yet -> simulation while it connects
+    demoMode=true; for(let i=0;i<4;i++) online[i]=true;
+    setConn('CONNECTING PYTHON…','');
+    demoStep(dt); triangulate();
+  } else if(wantLive){
+    let live=0;
+    for(let i=0;i<4;i++){ const r=(now-lastMsg[i])<2000; online[i]=r; if(r) live++; }
+    demoMode = lastMsg.every(t=>(now-t)>4000);      // no data -> simulation
+    if(demoMode) for(let i=0;i<4;i++) online[i]=true;
+    if(!demoMode){ modeEl.textContent='LIVE'; modeEl.className='pill ok'; }
+    setConn(live===4?'LIVE 4/4':live>0?('LIVE '+live+'/4'):'SEARCHING FOR NODES…', live>0?'ok':'');
+    if(demoMode) demoStep(dt);
+    triangulate();
+  } else {
+    for(let i=0;i<4;i++) online[i]=true;            // manual demo
+    if(demoMode) demoStep(dt);
+    triangulate();
+  }
+
+  // speed and heading
+  const vx=person.x-prevP.x, vy=person.y-prevP.y;
+  const step=Math.hypot(vx,vy), spd=step/Math.max(dt,1e-3);
+  if(step>0.004){ const h=Math.atan2(vx,vy); let d=h-heading;
+    while(d>Math.PI)d-=2*Math.PI; while(d<-Math.PI)d+=2*Math.PI; heading+=d*0.2; }
+  walkPhase += step*9 + (present?dt*0.6:0);
+
+  // posture (standing / crouching)
+  let tgtCrouch;
+  if(usingPy){
+    tgtCrouch = pyData.crouch||0;                   // posture computed in Python
+  } else {
+    let total=0; for(let i=0;i<4;i++) total+=ne[i];
+    eMax=Math.max(eMax*0.995, total);
+    const standRatio=clamp(total/(eMax+1e-6),0,1);
+    const liveCrouch=clamp((1-standRatio)*cfg.postSens,0,1);
+    tgtCrouch = demoMode ? demoCrouch : liveCrouch;
+  }
+  crouchAmt = lerp(crouchAmt, present?tgtCrouch:0, 0.12);
+
+  // place and pose the skeleton
+  sk.group.position.set(person.x,0,person.y);
+  poseSkeleton(crouchAmt, walkPhase, spd, present);
+
+  personGlow.position.set(person.x,0.55,person.y);
+  personGlow.material.opacity=present?0.18:0.04;
+  const pulse=0.5+0.3*Math.sin(now*0.006);
+  personGlow.scale.setScalar(present?(0.9+pulse*0.5):0.5);
+  prevP.copy(person);
+
+  if(present){
+    trailPts.push(person.x,0.05,person.y);
+    if(trailPts.length>60*3) trailPts.splice(0,3);
+    const arr=trail.geometry.attributes.position.array;
+    for(let i=0;i<arr.length;i++) arr[i]=trailPts[i]??person.x;
+    trail.geometry.attributes.position.needsUpdate=true;
+    trail.geometry.setDrawRange(0,trailPts.length/3);
+  }
+
+  for(let i=0;i<4;i++){
+    const norm=ne[i];                              // normalized energy 0..1
+    if(nodeGlows[i]){
+      nodeGlows[i].scale.setScalar(0.6+norm*2.2);
+      nodeGlows[i].material.opacity=0.1+norm*0.5;
+      nodeMeshes[i].material.color.setHex(online[i]?0x00ff62:0x553333);
+    }
+    bars[i].bar.style.width=Math.min(100,norm*100)+'%';
+    bars[i].rssi.textContent=(rssis[i]||0)+' dBm';
+    bars[i].dot.className='dot'+(online[i]?' on':'');
+  }
+
+  presEl.textContent=present?'PRESENCE DETECTED':'NO PRESENCE';
+  presEl.className='big presence'+(present?' live':'');
+  coordEl.textContent=present?`x: ${person.x.toFixed(2)} m   y: ${person.y.toFixed(2)} m`:'x: --  y: --';
+  if(present){ const isCrouch=crouchAmt>0.5;
+    poseEl.textContent=(isCrouch?'CROUCHING':'STANDING')+`  (${Math.round(crouchAmt*100)}%)`;
+    poseEl.className='presence'+(isCrouch?'':' live');
+  } else { poseEl.textContent='posture: --'; poseEl.className='presence'; }
+  // activity detected by the AI (only in Python mode with a trained model)
+  if(usingPy && present && pyData.activity){
+    actEl.textContent='AI: '+String(pyData.activity).toUpperCase()+'  ('+Math.round((pyData.act_conf||0)*100)+'%)';
+  } else { actEl.textContent=''; }
+  fpsEl.textContent=Math.round(fpsAvg)+' fps';
+
+  controls.update(); renderer.render(scene,camera); requestAnimationFrame(animate);
+}
+requestAnimationFrame(animate);
+
+addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); });
+</script>
+</body>
+</html>
