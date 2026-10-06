@@ -1,33 +1,23 @@
 /*
  * ============================================================================
- *  WIFI-CSI HUMAN RADAR  ·  ESP32-S3 firmware
+ *  WIFI RSSI HUMAN RADAR (Method 1: Jukić et al. 2025) · ESP32-S3 Firmware
  * ============================================================================
- *  Detects and triangulates people using WiFi perturbation (CSI).
+ *  Implements Method 1 from "Detection of presence and number of persons by a
+ *  Wi-Fi signal: a practical RSSI-based approach" (arXiv:2308.06773).
  *
- *  Flash the SAME sketch onto all 4 devices. You only need to change the
- *  value of NODE_ID (0,1,2,3) and, if you want, the WiFi credentials.
+ *  Instead of fragile and complex CSI, this firmware uses a Wi-Fi Promiscuous
+ *  Sniffer to measure the Received Signal Strength Indicator (RSSI) of frames,
+ *  and calculates the rolling Standard Deviation (sigma) in real-time.
  *
- *  ARCHITECTURE: the 4 nodes are IDENTICAL and INDEPENDENT. Each one connects
- *  to WiFi on its own, captures its own CSI and exposes its own WebSocket
- *  server (port 81). The 3D app connects to all 4 separately and combines the
- *  signals -> the reading from each board is direct and real, without going
- *  through any intermediate node. Each node advertises itself over mDNS as
- *  sgpcsi-<ID>.local
+ *  Detection rule (Section 3.1.1):
+ *    Presence is detected when sigma > f * <sigma_noise>, where f = 2.2.
  *
- *  PHYSICAL PLACEMENT: put the 4 nodes in the 4 corners of the room. The
- *  actual positions (in meters) are configured in the web app (visualizer).
- *
- * ----------------------------------------------------------------------------
- *  REQUIREMENTS (Arduino IDE)
- *    - Board: "ESP32S3 Dev Module" (espressif/arduino-esp32 board manager).
- *      Tested with arduino-esp32 v2.0.17 and v3.0.x.
- *    - Library: "WebSockets" by Markus Sattler (arduinoWebSockets), on all.
- *      Library Manager -> search for "WebSockets" by Markus Sattler.
- *    - Library: "Adafruit NeoPixel" (status RGB LED).
- * ----------------------------------------------------------------------------
- *  WARNING: the ESP32 CSI gives APPROXIMATE position (zone/movement), not cm.
- *           Calibrate the thresholds from the web app until you like the
- *           response.
+ *  ARCHITECTURE:
+ *    - All nodes connect to the same Wi-Fi router (on a fixed channel).
+ *    - Promiscuous sniffer captures all packets/beacons on the channel.
+ *    - Node computes rolling std dev of RSSI and exposes WebSocket on port 81.
+ *    - Advertises via mDNS as sgpcsi-<ID>.local.
+ *    - Compatible with tracker.py and index.html (3D visualizer).
  * ============================================================================
  */
 
@@ -38,47 +28,48 @@
 #include <math.h>
 
 // ====================== CONFIGURATION ======================
-#define NODE_ID        3                 // <<< CHANGE THIS ON EACH BOARD: 0,1,2,3
-                                          //     (all 4 are identical and independent)
+#define NODE_ID        0                 // <<< CHANGE THIS ON EACH BOARD: 0,1,2,3
+                                         //     (0=MASTER, 1, 2, 3)
 
-const char* WIFI_SSID  = "MOVISTAR_83A6";          // <<< your WiFi network (2.4GHz)
-const char* WIFI_PASS  = "2Fqh58oQ8S9X8FzpwQha";   // <<< your password
+const char* WIFI_SSID  = "YOUR_WIFI_SSID";   // <<< your Wi-Fi SSID (2.4GHz)
+const char* WIFI_PASS  = "YOUR_WIFI_PASS";   // <<< your password
 
-const uint16_t WS_PORT  = 81;            // each node exposes its own WebSocket
-#define MDNS_BASE       "sgpcsi"         // each node advertises as sgpcsi-<ID>.local
-                                          // (the app connects to all 4 separately)
+const uint16_t WS_PORT = 81;             // WebSocket port
+#define MDNS_BASE       "sgpcsi"         // mDNS: sgpcsi-<ID>.local
 
-// --- Status RGB LED (WS2812B on the SGP Card Mini, per its actual pinout) ---
+// --- Status RGB LED (WS2812B on GPIO5 for SGP Card Mini) ---
 #include <Adafruit_NeoPixel.h>
-#define PIN_RGB_LED      5               // GPIO5 on the SGP Card Mini
+#define PIN_RGB_LED      5               // GPIO5 on SGP Card Mini (set -1 if none)
 #define RGB_COUNT        1
-const uint8_t LED_BRIGHTNESS = 80;       // 0..255
+const uint8_t LED_BRIGHTNESS = 80;
 Adafruit_NeoPixel rgbLED(RGB_COUNT, PIN_RGB_LED, NEO_GRB + NEO_KHZ800);
 
-// --- SGP Card Mini buzzer (PWM/LEDC, same as SGP_HACKER12) ---
-#define PIN_BUZZER       1               // GPIO1 per the board pinout
-const bool BEEP_ENABLED  = true;         // set to false to mute
+// --- Buzzer (GPIO1 on SGP Card Mini) ---
+#define PIN_BUZZER       1
+const bool BEEP_ENABLED  = true;         // Set false to mute
 
-// --- detection parameters (tunable) ---
-const float BASELINE_ALPHA = 0.02f;      // speed at which the "empty
-                                          // environment" is relearned (higher =
-                                          // forgets the movement sooner)
-const float ENERGY_ALPHA   = 0.30f;      // smoothing of the output energy
-const int   MAX_SUBCARRIERS = 256;       // cap of subcarriers to process
-const uint32_t REPORT_MS    = 50;        // how often a report is sent (20 Hz)
-const uint32_t STIM_MS      = 8;         // how often the channel is "stimulated"
+// --- Method 1 Parameters (Jukić et al., Section 3.1.1) ---
+const float F_FACTOR        = 2.2f;      // Decision threshold factor f = 2.2
+const int   RSSI_WINDOW_LEN = 128;       // Ring buffer of last 128 RSSI samples (~5-10 s)
+const uint32_t REPORT_MS    = 50;        // Report interval (20 Hz)
+const uint32_t STIM_MS      = 20;        // Channel stimulus ping (50 Hz traffic)
 // ===========================================================
 
 #include <WebSocketsServer.h>
 WebSocketsServer webSocket(WS_PORT);
 
-WiFiUDP udpStim;      // channel stimulus ping
+WiFiUDP udpStim;
 
-// --- CSI state shared with the callback (runs in the WiFi task) ---
-volatile float g_energy = 0.0f;          // smoothed movement energy
-volatile int   g_rssi   = 0;
-static   float baseline[MAX_SUBCARRIERS];
-static   bool  baselineReady = false;
+// --- RSSI Promiscuous Buffer & State ---
+volatile int8_t  g_rssi_buf[RSSI_WINDOW_LEN];
+volatile int     g_buf_head = 0;
+volatile int     g_buf_count = 0;
+volatile int8_t  g_last_rssi = -60;
+
+volatile float   g_energy = 0.0f;        // sigma (standard deviation) in dB
+volatile bool    g_presence = false;     // Local Method 1 decision
+float            g_baseline_sigma = 0.43f; // Default ~0.43 dB as measured in empty room
+bool             g_baseline_calibrated = false;
 
 uint32_t lastReport = 0;
 uint32_t lastStim   = 0;
@@ -86,15 +77,15 @@ uint32_t lastStim   = 0;
 // --- RGB LED state ---
 enum LedMode { LED_CONNECTING, LED_CONNECTED, LED_FAIL };
 volatile LedMode ledMode = LED_CONNECTING;
-LedMode  prevLedMode = (LedMode)255;     // forces the first beep
+LedMode  prevLedMode = (LedMode)255;
 uint32_t lastBlink = 0, lastFailBeep = 0;
 bool     ledOn = false;
 
-// --- Buzzer (LEDC, arduino-esp32 3.x API) ---
+// --- Buzzer Helpers ---
 void playTone(int freq, int dur) {
   if (!BEEP_ENABLED) return;
   ledcAttach(PIN_BUZZER, freq, 8);
-  ledcWrite(PIN_BUZZER, 128);            // 50% duty
+  ledcWrite(PIN_BUZZER, 128);
   delay(dur);
   ledcWrite(PIN_BUZZER, 0);
   ledcDetach(PIN_BUZZER);
@@ -103,8 +94,6 @@ void beepConnected()  { playTone(1200,60); delay(20); playTone(1800,60); delay(2
 void beepConnecting() { playTone(700,60); }
 void beepFail()       { playTone(500,120); delay(40); playTone(300,180); }
 
-// The WS2812 runs over RMT and clashes with the WiFi stack: we pause the modem
-// for a moment around each show() (same trick as the SGP_HACKER firmware).
 void rgbShowSafe() {
   if (WiFi.status() == WL_CONNECTED) WiFi.setSleep(WIFI_PS_MAX_MODEM);
   rgbLED.show();
@@ -121,9 +110,9 @@ void setLED(uint8_t r, uint8_t g, uint8_t b) {
 void updateLED() {
   uint16_t interval;
   switch (ledMode) {
-    case LED_CONNECTED:  interval = 500; break;   // green, calm blink
-    case LED_CONNECTING: interval = 400; break;   // blue
-    case LED_FAIL:       interval = 130; break;   // red, fast blink
+    case LED_CONNECTED:  interval = g_presence ? 150 : 600; break;
+    case LED_CONNECTING: interval = 400; break;
+    case LED_FAIL:       interval = 130; break;
     default:             interval = 400; break;
   }
   if (millis() - lastBlink < interval) return;
@@ -132,13 +121,15 @@ void updateLED() {
 
   if (!ledOn) { setLED(0, 0, 0); return; }
   switch (ledMode) {
-    case LED_CONNECTED:  setLED(0, 255, 0);   break;  // green
-    case LED_CONNECTING: setLED(0, 60, 255);  break;  // blue
-    case LED_FAIL:       setLED(255, 0, 0);   break;  // red
+    case LED_CONNECTED:
+      if (g_presence) setLED(255, 180, 0); // Orange/Yellow when human presence detected
+      else            setLED(0, 255, 0);   // Green when empty / calm
+      break;
+    case LED_CONNECTING: setLED(0, 60, 255);  break;
+    case LED_FAIL:       setLED(255, 0, 0);   break;
   }
 }
 
-// beeps when the state changes; on failure it repeats the alert every 3 s
 void updateBuzzer() {
   if (ledMode != prevLedMode) {
     if      (ledMode == LED_CONNECTED)  beepConnected();
@@ -152,77 +143,77 @@ void updateBuzzer() {
 }
 
 // ---------------------------------------------------------------------------
-//  CSI callback: called for every packet received. It must be FAST.
+//  Promiscuous RX callback: captures incoming frames & extracts RSSI
 // ---------------------------------------------------------------------------
-void IRAM_ATTR csiCallback(void* ctx, wifi_csi_info_t* info) {
-  if (!info || !info->buf || info->len < 2) return;
+void IRAM_ATTR wifiSnifferCallback(void* buf, wifi_promiscuous_pkt_type_t type) {
+  if (!buf) return;
+  wifi_promiscuous_pkt_t* pkt = (wifi_promiscuous_pkt_t*)buf;
+  int8_t r = pkt->rx_ctrl.rssi;
 
-  const int8_t* buf = info->buf;
-  int pairs = info->len / 2;
-  if (pairs > MAX_SUBCARRIERS) pairs = MAX_SUBCARRIERS;
-
-  float dev = 0.0f;
-  int   cnt = 0;
-
-  for (int i = 0; i < pairs; i++) {
-    int8_t imag = buf[i * 2];
-    int8_t real = buf[i * 2 + 1];
-    float amp = sqrtf((float)real * real + (float)imag * imag);
-
-    if (!baselineReady) {
-      baseline[i] = amp;
-    } else {
-      float d = amp - baseline[i];
-      if (d < 0) d = -d;
-      dev += d;
-      // the baseline slowly relearns the static environment
-      baseline[i] += BASELINE_ALPHA * (amp - baseline[i]);
-      cnt++;
+  if (r < 0 && r > -110) {
+    g_last_rssi = r;
+    g_rssi_buf[g_buf_head] = r;
+    g_buf_head = (g_buf_head + 1) % RSSI_WINDOW_LEN;
+    if (g_buf_count < RSSI_WINDOW_LEN) {
+      g_buf_count++;
     }
   }
-
-  if (!baselineReady) { baselineReady = true; return; }
-  if (cnt == 0) return;
-
-  float inst = dev / (float)cnt;                 // mean deviation per subcarrier
-  g_energy = (1.0f - ENERGY_ALPHA) * g_energy + ENERGY_ALPHA * inst;
-  g_rssi   = info->rx_ctrl.rssi;
 }
 
 // ---------------------------------------------------------------------------
-void enableCSI() {
-  // NOTE: wifi_csi_config_t struct valid in arduino-esp32 2.0.x / 3.0.x.
-  // If your core is very new and it does not compile, check the README (CSI section).
-  wifi_csi_config_t csi_config = {
-    .lltf_en           = true,
-    .htltf_en          = true,
-    .stbc_htltf2_en    = true,
-    .ltf_merge_en      = true,
-    .channel_filter_en = true,
-    .manu_scale        = false,
-    .shift             = 0,
+//  Calculate Standard Deviation (sigma) of RSSI over the sliding window
+// ---------------------------------------------------------------------------
+float computeRssiStdDev() {
+  int count = g_buf_count;
+  if (count < 15) return 0.0f;
+
+  int8_t copy_buf[RSSI_WINDOW_LEN];
+  for (int i = 0; i < count; i++) {
+    copy_buf[i] = g_rssi_buf[i];
+  }
+
+  float sum = 0.0f;
+  for (int i = 0; i < count; i++) {
+    sum += (float)copy_buf[i];
+  }
+  float mean = sum / (float)count;
+
+  float var_sum = 0.0f;
+  for (int i = 0; i < count; i++) {
+    float diff = (float)copy_buf[i] - mean;
+    var_sum += diff * diff;
+  }
+  return sqrtf(var_sum / (float)count);
+}
+
+// ---------------------------------------------------------------------------
+//  Enable Wi-Fi Promiscuous Sniffer on the active channel
+// ---------------------------------------------------------------------------
+void enableSniffer() {
+  wifi_promiscuous_filter_t filter = {
+    .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA
   };
-  esp_wifi_set_csi_config(&csi_config);
-  esp_wifi_set_csi_rx_cb(&csiCallback, NULL);
-  esp_wifi_set_csi(true);
-  Serial.println("[CSI] enabled");
+  esp_wifi_set_promiscuous_filter(&filter);
+  esp_wifi_set_promiscuous_rx_cb(&wifiSnifferCallback);
+  esp_wifi_set_promiscuous(true);
+  Serial.println("[SNIFFER] Wi-Fi Promiscuous RSSI monitor enabled");
 }
 
 // ---------------------------------------------------------------------------
 void connectWiFi() {
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);                  // no power-save -> more stable CSI
+  WiFi.setSleep(false);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.printf("[WiFi] connecting to %s", WIFI_SSID);
-  ledMode = LED_CONNECTING;                 // blue while connecting
+  ledMode = LED_CONNECTING;
   uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED) {
     updateLED();
-    if (millis() - start > 12000) ledMode = LED_FAIL;   // red if it does not latch on
+    if (millis() - start > 12000) ledMode = LED_FAIL;
     delay(50);
     if ((millis() - start) % 400 < 50) Serial.print(".");
   }
-  ledMode = LED_CONNECTED;                  // green once connected
+  ledMode = LED_CONNECTED;
   Serial.println();
   Serial.printf("[WiFi] OK  IP=%s  GW=%s  RSSI=%d\n",
                 WiFi.localIP().toString().c_str(),
@@ -233,65 +224,63 @@ void connectWiFi() {
 }
 
 // ---------------------------------------------------------------------------
-//  Channel stimulus: we send a UDP packet to the router very frequently to
-//  force traffic (and its ACKs) -> more packets received -> more CSI samples.
+//  Stimulate channel traffic to generate RSSI samples constantly
 // ---------------------------------------------------------------------------
 void stimulateChannel() {
   uint8_t b = 0x55;
-  udpStim.beginPacket(WiFi.gatewayIP(), 9);   // discard port
+  udpStim.beginPacket(WiFi.gatewayIP(), 9);
   udpStim.write(&b, 1);
   udpStim.endPacket();
 }
 
 // ---------------------------------------------------------------------------
-//  Each node emits ITS OWN signal over WebSocket to the app.
+//  Broadcast JSON telemetry to WebSocket clients (tracker.py & index.html)
 // ---------------------------------------------------------------------------
 void broadcastOwn() {
-  char json[96];
+  char json[128];
+  // 'e' sends sigma (standard deviation in dB) to remain compatible with tracker.py
   snprintf(json, sizeof(json),
-           "{\"id\":%d,\"e\":%.3f,\"rssi\":%d,\"on\":1}",
-           NODE_ID, g_energy, g_rssi);
+           "{\"id\":%d,\"e\":%.3f,\"rssi\":%d,\"on\":1,\"std\":%.3f,\"p\":%d}",
+           NODE_ID, g_energy, (int)g_last_rssi, g_energy, g_presence ? 1 : 0);
   webSocket.broadcastTXT(json);
 }
 
 void onWsEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
-  if (type == WStype_CONNECTED)         Serial.printf("[WS] app connected #%u\n", num);
-  else if (type == WStype_DISCONNECTED) Serial.printf("[WS] app disconnected #%u\n", num);
+  if (type == WStype_CONNECTED)         Serial.printf("[WS] client connected #%u\n", num);
+  else if (type == WStype_DISCONNECTED) Serial.printf("[WS] client disconnected #%u\n", num);
 }
 
 // ---------------------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
   delay(300);
-  Serial.println("\n=== SGP CSI HUMAN RADAR ===");
+  Serial.println("\n=== SGP METHOD 1 (RSSI STDDEV) HUMAN DETECTOR ===");
 
   rgbLED.begin();
   rgbLED.setBrightness(LED_BRIGHTNESS);
-  setLED(0, 60, 255);                       // blue on boot
-  playTone(600,60); delay(20); playTone(900,80);   // startup beep
+  setLED(0, 60, 255);
+  playTone(600,60); delay(20); playTone(900,80);
+
   connectWiFi();
-  enableCSI();
+  enableSniffer();
 
   udpStim.begin(0);
 
   webSocket.begin();
   webSocket.onEvent(onWsEvent);
 
-  // each node advertises over mDNS as  sgpcsi-<ID>.local
   String hn = String(MDNS_BASE) + "-" + String(NODE_ID);
   if (MDNS.begin(hn.c_str())) {
     MDNS.addService("sgpcsi", "tcp", WS_PORT);
     Serial.printf("[mDNS] advertised as %s.local\n", hn.c_str());
   }
-  Serial.printf("[WS] ready at ws://%s.local:%d  (the app connects on its own)\n",
-                hn.c_str(), WS_PORT);
+  Serial.printf("[WS] ready at ws://%s.local:%d\n", hn.c_str(), WS_PORT);
 }
 
 // ---------------------------------------------------------------------------
 void loop() {
   uint32_t now = millis();
 
-  // status LED: green=connected / blue=connecting / red=failure
   if (WiFi.status() == WL_CONNECTED) ledMode = LED_CONNECTED;
   else if (ledMode != LED_FAIL)      ledMode = LED_CONNECTING;
   updateLED();
@@ -299,19 +288,43 @@ void loop() {
 
   webSocket.loop();
 
+  // Traffic stimulus
   if (now - lastStim >= STIM_MS) {
     lastStim = now;
     stimulateChannel();
   }
 
+  // Periodic computation & WebSocket broadcast
   if (now - lastReport >= REPORT_MS) {
     lastReport = now;
+
+    float cur_sigma = computeRssiStdDev();
+    g_energy = cur_sigma;
+
+    // Adaptive noise baseline tracking:
+    // Floor slowly drops towards quiet room noise; rises very slowly to avoid drift
+    if (!g_baseline_calibrated && g_buf_count >= 50) {
+      g_baseline_sigma = cur_sigma;
+      g_baseline_calibrated = true;
+      Serial.printf("[CALIB] Initial noise baseline <sigma> = %.3f dB\n", g_baseline_sigma);
+    } else if (g_baseline_calibrated) {
+      if (cur_sigma < g_baseline_sigma) {
+        g_baseline_sigma += 0.05f * (cur_sigma - g_baseline_sigma);
+      } else {
+        g_baseline_sigma += 0.0005f * (cur_sigma - g_baseline_sigma);
+      }
+    }
+
+    // Method 1 Decision Rule (sigma > f * <sigma_noise>)
+    g_presence = (cur_sigma > F_FACTOR * g_baseline_sigma);
+
     broadcastOwn();
   }
 
-  // simple reconnection
+  // Auto-reconnect if Wi-Fi drops
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[WiFi] lost, reconnecting...");
     connectWiFi();
+    enableSniffer();
   }
 }

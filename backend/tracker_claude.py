@@ -30,7 +30,7 @@ import websockets
 
 # ---- Configuration ----
 # List of ESP32 node IPs or mDNS hostnames (3, 4, or any number of nodes):
-NODE_HOSTS = ["10.239.61.78", "10.239.61.227", "10.239.61.144", "10.239.61.221"]
+NODE_HOSTS = ["192.168.1.10", "192.168.1.11", "192.168.1.12", "192.168.1.13"]
 NODE_PORT  = 81
 NUM_NODES  = len(NODE_HOSTS)
 WEB_PORT   = 8765

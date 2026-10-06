@@ -1,156 +1,145 @@
-# SGP CSI · Setup Instructions
+# SGP CSI · Setup Instructions (Multi-Platform: macOS / Windows / Linux)
 
 Step-by-step guide to get the **WiFi CSI human radar** running: detect and
 triangulate a person in a room and see them move in real time in 3D.
 
-> ## ⚠️ REQUIRED: 4 × SGP Card Mini
-> This system **needs the 4 SGP Card Mini boards** (each has an internal
-> ESP32-S3). The 4 boards sit in the 4 corners of the room and each one measures
-> the WiFi disturbance from its own corner. **Triangulation only works with all
-> 4** — with fewer boards the position is ambiguous and unreliable. Do not skip
-> this: 4 boards, one in each corner, is mandatory for it to be effective.
+> ## ⚠️ REQUIRED FOR 3D RADAR: 3 or 4 ESP32-S3 Boards
+> This mode triangulates a person across the room.
+> The boards sit in the corners of the room and each one measures
+> the WiFi disturbance from its own corner.
+> *(If you only have **one board**, see [INSTRUCTIONS_SINGLE_CSI.md](../INSTRUCTIONS_SINGLE_CSI.md) instead!)*
 
 ---
 
-## What you need
+## 1. What You Need
 
-- **4 × SGP Card Mini** (ESP32-S3 inside), powered (USB or battery).
-- A **2.4 GHz WiFi** network (the ESP32 does **not** use 5 GHz).
-- A computer (macOS or Windows) on the **same WiFi** network.
-- **Arduino IDE** to flash the boards (one-time).
-- (Optional) **Python 3** for the advanced "Python Power" mode (Kalman + AI).
+* **3 или 4 платы ESP32-S3** (питание по USB или аккумуляторам).
+* Сеть Wi-Fi **2.4 GHz** (ESP32 не поддерживает 5 GHz).
+* Компьютер (**macOS, Windows или Linux**) в той же локальной сети.
+* **Arduino IDE 2.x** для единоразовой прошивки плат.
+* **Python 3.9+** для расширенного бэкенда "Python Power" (Kalman 2D + AI).
 
 ---
 
-## STEP 1 — Flash the 4 boards (one time)
+## 2. STEP 1 — Flash the Boards (Arduino IDE on macOS / Windows / Linux)
 
-1. Install **Arduino IDE 2.x**.
-2. Add the ESP32 boards: *Preferences → Additional Boards Manager URLs* →
+1. Установите **Arduino IDE 2.x** ([arduino.cc/en/software](https://www.arduino.cc/en/software)).
+2. Добавьте платы ESP32: *File → Preferences → Additional Boards Manager URLs*:
    `https://espressif.github.io/arduino-esp32/package_esp32_index.json`
-   then install **esp32** from *Boards Manager*.
-3. Install two libraries (*Library Manager*):
-   - **WebSockets** by *Markus Sattler*
-   - **Adafruit NeoPixel**
-4. Open `firmware/wifi_csi/wifi_csi.ino`. At the top set your WiFi:
+3. Установите библиотеки (*Tools → Manage Libraries*):
+   * **WebSockets** by *Markus Sattler*
+   * **Adafruit NeoPixel**
+4. Откройте `firmware/wifi_csi/wifi_csi.ino`.
+5. В начале скетча введите SSID и пароль вашей 2.4 GHz Wi-Fi сети:
    ```cpp
-   const char* WIFI_SSID = "YOUR_WIFI";       // 2.4 GHz
-   const char* WIFI_PASS = "YOUR_PASSWORD";
+   const char* WIFI_SSID  = "YOUR_WIFI_2.4G";
+   const char* WIFI_PASS  = "YOUR_PASSWORD";
    ```
-5. Select board **ESP32S3 Dev Module**.
-6. Flash each board changing **only** `NODE_ID` each time:
+6. Выберите плату: **ESP32S3 Dev Module**.
+7. Прошейте каждую плату по очереди, меняя только значение `NODE_ID`:
+   * Плата 1: `#define NODE_ID 0` (Master)
+   * Плата 2: `#define NODE_ID 1`
+   * Плата 3: `#define NODE_ID 2`
+   * Плата 4: `#define NODE_ID 3`
 
-   | Board | Set this line       | Then click |
-   |-------|---------------------|------------|
-   | 1     | `#define NODE_ID 0` | Upload     |
-   | 2     | `#define NODE_ID 1` | Upload     |
-   | 3     | `#define NODE_ID 2` | Upload     |
-   | 4     | `#define NODE_ID 3` | Upload     |
-
-That's it — there is **no master**. All 4 boards are identical and independent.
-
-### How to know a board works
-- On power-up: 🔵 **blue blinking** while connecting → 🟢 **green blinking** +
-  a beep when connected to WiFi. 🔴 **red** = it cannot join WiFi (check
-  SSID/password and that it's 2.4 GHz).
-- Open the **Serial Monitor** (115200) to see:
-  `[WS] ready at ws://sgpcsi-0.local:81` (with its own number).
+### Как понять, что плата подключилась:
+* При старте: 🔵 мигает синим (подключение) → 🟢 мигает зелёным (успешно в сети).
+* В **Serial Monitor (115200)** отобразится:
+  `[WS] ready at ws://sgpcsi-0.local:81` (с соответствующим номером ID и IP-адресом).
 
 ---
 
-## STEP 2 — Place the boards
+## 3. STEP 2 — Размещение плат в комнате
 
-Put one board in **each of the 4 corners** of the room, roughly at chest height,
-with nothing metallic blocking them. Remember which corner is N0, N1, N2, N3.
+Разместите платы по углам комнаты примерно на уровне груди (1.2–1.5 м от пола):
 
-```
+```text
    N3 ───────────── N2
-    │   (room)      │
+    │   (комната)   │
     │      ◍        │
-    │   person      │
+    │   человек     │
    N0 ───────────── N1
 ```
 
 ---
 
-## STEP 3 — Open the web app
+## 4. STEP 3 — Запуск 3D Веб-интерфейса
 
-1. Open `visualizer/index.html` in your browser (double-click).
-2. It **auto-connects** to the 4 boards (`sgpcsi-0..3.local`). Top-right you'll
-   see **`LIVE 4/4`** when all four are up.
-   - If your network can't resolve `.local` names, type the **4 board IPs**
-     (comma-separated) in the connection box. You can read each IP in that
-     board's Serial Monitor.
-3. Set your room size (**Room width X / length Y**, in meters).
-4. Switch to the **Top** or **Drone** camera view and **drag each node** onto its
-   real corner (or type its X/Y/Z in meters). Accurate placement = accurate
-   tracking.
-5. With the room **empty**, click **Recalibrate empty room** to learn the
-   baseline. From then on, any movement shows up as presence.
+Веб-приложение работает прямо в браузере (Chrome, Safari, Firefox, Edge).
 
-### Tuning (sliders)
-- **Sharpness** – higher pulls the estimate harder toward the dominant node.
-- **Position smoothing** – higher = smoother/slower, less jitter.
-- **Presence threshold (0–1)** – minimum activity to count as "someone here".
-- **Posture sensitivity** – how easily it calls "crouching".
+### Запуск встроенного веб-сервера (рекомендуется для всех ОС):
 
-Now walk around — the 3D skeleton should follow you, and show **standing /
-crouching**.
+* **macOS / Linux:**
+  ```bash
+  python3 -m http.server 8000
+  ```
+* **Windows:**
+  ```cmd
+  python -m http.server 8000
+  ```
 
----
+Откройте в браузере: **`http://localhost:8000/frontend/index.html`**
 
-## STEP 4 (optional) — "Python Power": Kalman + AI
-
-The web works on its own. For more reliable position and **activity detection**,
-run the Python engine.
-
-1. Start it (double-click):
-   - macOS: `python/START-TRACKER-MAC.command`
-   - Windows: `python/START-TRACKER-WINDOWS.bat`
-   The first run installs everything; a Terminal opens and the web opens by
-   itself.
-2. In the web, click the orange **⚡ PYTHON POWER** button.
-   - Success → green toast **"Python connected ✓"**, and the Terminal prints a
-     big **`>>> WEB CONNECTED — PYTHON POWER ACTIVE`** banner.
-   - If it isn't running, the web shows a panel telling you which file to open.
-3. Click the button again to return to direct mode.
-
-> Just want to test without the boards? Use
-> `python/TEST-WITHOUT-BOARDS-MAC.command` (or the `-WINDOWS.bat`): it simulates
-> a moving person so you can verify the whole chain.
-
-### Teach it activities (neural network)
-The AI must be trained **in your room** (every room echoes WiFi differently).
-In a Terminal:
-```bash
-cd "wifi csi/python"
-source .venv/bin/activate            # Windows: .venv\Scripts\activate
-python tracker.py --record standing --seconds 30
-python tracker.py --record crouching --seconds 30
-python tracker.py --record walking  --seconds 30
-python tracker.py --record empty    --seconds 20
-python tracker.py --train            # trains the neural network
-python tracker.py                    # run again; the web now shows the activity
-```
-While in Python Power mode you'll see **`AI: <ACTIVITY> (xx%)`** top-right.
+1. Интерфейс автоматически начнёт подключаться к нодам (`sgpcsi-0..3.local:81`).
+2. Вверху справа появится статус: **`LIVE 4/4`** (или количество обнаруженных плат).
+   * *Если в вашей сети mDNS (.local) не резолвится:* введите IP-адреса плат через запятую в поле "Nodes", например: `192.168.1.101, 192.168.1.102, 192.168.1.103, 192.168.1.104`.
+3. Задайте реальные размеры комнаты (X и Y в метрах) и расставьте ноды по углам на плане.
+4. В пустой комнате нажмите **Recalibrate empty environment** (калибровка фонового шума).
 
 ---
 
-## Troubleshooting
+## 5. STEP 4 — Python Power (Kalman-фильтр + Распознавание поз)
 
-| Problem                              | Fix                                                                 |
-|--------------------------------------|----------------------------------------------------------------------|
-| Board LED stays red                  | Wrong WiFi / not 2.4 GHz. Re-check SSID and password.                |
-| Web shows `LIVE 3/4`                 | One board is off or not flashed. Power it / flash its `NODE_ID`.     |
-| Web won't connect                    | Same network; open as `file://` (not `https://`); or type the 4 IPs.|
-| No presence detected                 | Lower the threshold; recalibrate with the room empty.               |
-| Presence with empty room             | Raise the threshold; recalibrate; reduce fans/curtains.             |
-| Position too jumpy                   | Raise position smoothing.                                            |
-| "Python not detected" panel          | Open `START-TRACKER-MAC.command` first, then press the button.      |
+Для устранения рывков координат и включения нейросетевого классификатора активности запустите Python-бэкенд:
+
+### Установка зависимостей:
+* **macOS / Linux:**
+  ```bash
+  pip3 install -r backend/requirements.txt
+  ```
+* **Windows:**
+  ```cmd
+  pip install -r backend\requirements.txt
+  ```
+
+### Запуск бэкенда:
+* **macOS / Linux:**
+  ```bash
+  python3 backend/tracker.py
+  ```
+* **Windows:**
+  ```cmd
+  python backend\tracker.py
+  ```
+
+В открытом браузере нажмите оранжевую кнопку **⚡ PYTHON POWER**.  
+Координаты человека начнут фильтроваться через 2D Kalman-фильтр на сервере.
 
 ---
 
-## Reality check
-ESP32 CSI gives an **approximate** position (zone + movement), not centimeters,
-and posture is an **estimate**. With all **4 boards** well placed and the room
-calibrated it tracks a person around the room and tells standing vs crouching
-quite reliably. For finer gestures you'd stream the full CSI (next-level upgrade).
+## 6. Режим симуляции (без физических плат)
+
+Если плат под рукой нет, вы можете протестировать систему в виртуальном режиме:
+
+* **macOS / Linux:**
+  ```bash
+  python3 backend/tracker.py --sim
+  ```
+* **Windows:**
+  ```cmd
+  python backend\tracker.py --sim
+  ```
+  Или двойным кликом запустите `Others/TEST-WITHOUT-BOARDS-WINDOWS.bat`.
+
+---
+
+## 7. Сводная таблица команд по платформам
+
+| Действие | macOS | Windows | Linux |
+|---|---|---|---|
+| **Установка библиотек** | `pip3 install -r backend/requirements.txt` | `pip install -r backend\requirements.txt` | `pip3 install -r backend/requirements.txt` |
+| **Запуск 1 платы (GUI)** | `python3 backend/single_csi.py` | `python backend\single_csi.py` | `python3 backend/single_csi.py` |
+| **Запуск 1 платы (CSV)** | `python3 backend/data_parser.py --serial /dev/cu.usbmodem...` | `python backend\data_parser.py --serial COM3` | `python3 backend/data_parser.py --serial /dev/ttyACM0` |
+| **Запуск 3D веб-сервера**| `python3 -m http.server 8000` | `python -m http.server 8000` | `python3 -m http.server 8000` |
+| **Запуск 4-нодного трекера** | `python3 backend/tracker.py` | `python backend\tracker.py` | `python3 backend/tracker.py` |
+| **Симуляция трекера** | `python3 backend/tracker.py --sim` | `python backend\tracker.py --sim` | `python3 backend/tracker.py --sim` |
