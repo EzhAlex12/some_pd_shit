@@ -41,8 +41,8 @@
 #define NODE_ID        0                 // <<< CHANGE THIS ON EACH BOARD: 0,1,2,3
                                           //     (all 4 are identical and independent)
 
-const char* WIFI_SSID  = "YOUR_WIFI_SSID";   // <<< your WiFi network (2.4GHz)
-const char* WIFI_PASS  = "YOUR_WIFI_PASS";   // <<< your password
+const char* WIFI_SSID  = "MYPC";          // <<< your WiFi network (2.4GHz)
+const char* WIFI_PASS  = "T93#79d7";   // <<< your password
 
 const uint16_t WS_PORT  = 81;            // each node exposes its own WebSocket
 #define MDNS_BASE       "sgpcsi"         // each node advertises as sgpcsi-<ID>.local

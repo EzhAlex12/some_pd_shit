@@ -18,8 +18,8 @@
 #include "esp_wifi.h"
 #include <math.h>
 
-const char* WIFI_SSID = "YOUR_WIFI_SSID";   // Имя сети 2.4 ГГц
-const char* WIFI_PASS = "YOUR_WIFI_PASS";   // Пароль сети
+const char* WIFI_SSID = "Pixel 8a";   // Имя сети 2.4 ГГц
+const char* WIFI_PASS = "k4t4Z0V_best";   // Пароль сети
 
 #define NUM_SUBCARRIERS 64
 

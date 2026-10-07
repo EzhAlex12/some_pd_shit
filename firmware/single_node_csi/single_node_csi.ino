@@ -16,8 +16,8 @@
 #include <math.h>
 
 // ====== НАСТРОЙКИ WI-FI ======
-const char* WIFI_SSID = "YOUR_WIFI_SSID";   // Имя вашей Wi-Fi сети 2.4 ГГц
-const char* WIFI_PASS = "YOUR_WIFI_PASS";   // Пароль сети
+const char* WIFI_SSID = "Andrey";   // Имя вашей Wi-Fi сети 2.4 ГГц
+const char* WIFI_PASS = "10172609pron";   // Пароль сети
 
 #define NUM_SUBCARRIERS 64
 volatile float   g_csi_amps[NUM_SUBCARRIERS];

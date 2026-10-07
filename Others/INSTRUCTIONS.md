@@ -143,3 +143,4 @@ triangulate a person in a room and see them move in real time in 3D.
 | **Запуск 3D веб-сервера**| `python3 -m http.server 8000` | `python -m http.server 8000` | `python3 -m http.server 8000` |
 | **Запуск 4-нодного трекера** | `python3 backend/tracker.py` | `python backend\tracker.py` | `python3 backend/tracker.py` |
 | **Симуляция трекера** | `python3 backend/tracker.py --sim` | `python backend\tracker.py --sim` | `python3 backend/tracker.py --sim` |
+
