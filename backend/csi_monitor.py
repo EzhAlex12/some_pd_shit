@@ -152,44 +152,55 @@ def run_websocket(url):
 # ---------------------------------------------------------------------------
 def main_gui():
     plt.style.use("dark_background")
-    fig = plt.figure(figsize=(12, 8))
+    fig = plt.figure(figsize=(12, 8.5), facecolor="#090d14")
     fig.canvas.manager.set_window_title("ESP32 Wi-Fi CSI Live Inspector")
-    gs = fig.add_gridspec(3, 1, height_ratios=[1.3, 1.0, 0.8])
+    gs = fig.add_gridspec(
+        3, 1,
+        height_ratios=[1.3, 1.0, 0.85],
+        top=0.88, bottom=0.07,
+        left=0.08, right=0.93,
+        hspace=0.38
+    )
+
+    fig.text(0.08, 0.94, "ESP32 CSI SPECTRUM INSPECTOR", fontsize=12, fontweight="bold", color="#38bdf8")
+    status_hud = fig.text(0.38, 0.94, "[ ИНИЦИАЛИЗАЦИЯ... ]", fontsize=11, fontweight="bold", color="#38bdf8")
+    stats_hud = fig.text(0.93, 0.94, "RSSI: -- dBm  |  VAR: --", fontsize=10, color="#94a3b8", ha="right")
 
     # 1. Водопад (Heatmap / Спектрограмма)
-    ax_waterfall = fig.add_subplot(gs[0])
-    ax_waterfall.set_title("1. CSI WATERFALL (СПЕКТРОГРАММА ВО ВРЕМЕНИ)", color="#00e5ff", fontsize=11, fontweight="bold")
-    ax_waterfall.set_ylabel("Кадры времени (История)")
-    ax_waterfall.set_xlabel("Номер поднесущей (1..64 OFDM)")
+    ax_waterfall = fig.add_subplot(gs[0], facecolor="#06090e")
+    ax_waterfall.set_title("1. CSI WATERFALL (СПЕКТРОГРАММА ВО ВРЕМЕНИ)", color="#00e5ff", fontsize=10, fontweight="bold", pad=8, loc="left")
+    ax_waterfall.set_ylabel("Время (кадры)", color="#94a3b8", fontsize=9)
+    ax_waterfall.tick_params(colors="#64748b", labelsize=8)
+    ax_waterfall.set_xticklabels([])
     im_waterfall = ax_waterfall.imshow(np.zeros((HISTORY_LEN, NUM_SUBCARRIERS)),
-                                       aspect="auto", cmap="plasma", vmin=10, vmax=35)
-    cbar = plt.colorbar(im_waterfall, ax=ax_waterfall, pad=0.01)
-    cbar.set_label("Амплитуда", color="#ccc")
+                                       aspect="auto", cmap="turbo", vmin=10, vmax=35)
+    cbar = plt.colorbar(im_waterfall, ax=ax_waterfall, pad=0.015, aspect=20)
+    cbar.ax.tick_params(colors="#64748b", labelsize=7)
+    cbar.set_label("Амплитуда", color="#94a3b8", fontsize=8)
 
     # 2. Мгновенный профиль поднесущих
-    ax_spectrum = fig.add_subplot(gs[1])
-    ax_spectrum.set_title("2. ТЕКУЩИЙ ПРОФИЛЬ ПОДНЕСУЩИХ (МГНОВЕННЫЙ СПЕКТР)", color="#00ff66", fontsize=11, fontweight="bold")
-    ax_spectrum.set_ylabel("Амплитуда |H(f)|")
-    ax_spectrum.set_xlabel("Поднесущая")
-    ax_spectrum.set_ylim(5, 40)
-    ax_spectrum.grid(True, linestyle="--", alpha=0.3)
+    ax_spectrum = fig.add_subplot(gs[1], facecolor="#06090e")
+    ax_spectrum.set_title("2. ТЕКУЩИЙ ПРОФИЛЬ ПОДНЕСУЩИХ |H(f)|", color="#00ff66", fontsize=10, fontweight="bold", pad=8, loc="left")
+    ax_spectrum.set_ylabel("Амплитуда", color="#94a3b8", fontsize=9)
+    ax_spectrum.set_xlim(0, NUM_SUBCARRIERS - 1)
+    ax_spectrum.set_ylim(0, 40)
+    ax_spectrum.grid(True, linestyle="--", alpha=0.2, color="#334155")
+    ax_spectrum.tick_params(colors="#64748b", labelsize=8)
+    ax_spectrum.set_xticklabels([])
     line_spec, = ax_spectrum.plot(range(NUM_SUBCARRIERS), np.zeros(NUM_SUBCARRIERS),
-                                  color="#00ff66", lw=2, marker="o", markersize=3)
+                                  color="#00ff66", lw=2, marker="o", markersize=2)
 
     # 3. Энергия возмущения во времени (Детекция движения)
-    ax_energy = fig.add_subplot(gs[2])
-    ax_energy.set_title("3. ВАРИАЦИЯ СИГНАЛА / ДВИЖЕНИЕ (ДИСПЕРСИЯ ПО ВСЕМ ПОДНЕСУЩИМ)", color="#ff9900", fontsize=11, fontweight="bold")
-    ax_energy.set_ylabel("CSI Variance")
-    ax_energy.set_xlabel("Время (сек)")
+    ax_energy = fig.add_subplot(gs[2], facecolor="#06090e")
+    ax_energy.set_title("3. ВАРИАЦИЯ СИГНАЛА ВО ВРЕМЕНИ (ДЕТЕКЦИЯ ДВИЖЕНИЯ)", color="#ff9900", fontsize=10, fontweight="bold", pad=8, loc="left")
+    ax_energy.set_ylabel("CSI Variance", color="#94a3b8", fontsize=9)
+    ax_energy.set_xlabel("Время (сек)", color="#94a3b8", fontsize=9)
     ax_energy.set_ylim(-0.1, 5.0)
-    ax_energy.grid(True, linestyle="--", alpha=0.3)
-    line_energy, = ax_energy.plot([], [], color="#ff9900", lw=2.2, label="CSI Perturbation")
-    line_thresh = ax_energy.axhline(0.6, color="#ff3333", linestyle="--", label="Порог детекции (Человек в зоне)")
-    ax_energy.legend(loc="upper right", fontsize=8)
-
-    status_hud = fig.text(0.02, 0.965, "ИНИЦИАЛИЗАЦИЯ...", fontsize=12, fontweight="bold", color="#fff")
-
-    plt.tight_layout()
+    ax_energy.grid(True, linestyle="--", alpha=0.2, color="#334155")
+    ax_energy.tick_params(colors="#64748b", labelsize=8)
+    line_energy, = ax_energy.plot([], [], color="#ff9900", lw=2.2, label="Возмущение")
+    ax_energy.axhline(0.6, color="#ef4444", linestyle="--", lw=1.2, label="Порог движения")
+    ax_energy.legend(loc="upper right", frameon=False, fontsize=8, labelcolor="#94a3b8")
 
     def update(_):
         with data_lock:
@@ -197,14 +208,18 @@ def main_gui():
                 return
 
             arr = np.array(list(csi_history))
-            # Динамическая автоподстройка контраста водопада
             im_waterfall.set_data(arr)
-            im_waterfall.set_clim(vmin=np.percentile(arr, 3), vmax=np.percentile(arr, 97))
+            vmin = np.percentile(arr, 3)
+            vmax = np.percentile(arr, 97)
+            if vmax - vmin < 0.5:
+                vmax = vmin + 2.0
+            im_waterfall.set_clim(vmin=vmin, vmax=vmax)
 
-            # Текущий спектр
             line_spec.set_ydata(arr[-1])
+            ymax = float(np.max(arr[-1]))
+            if ymax > ax_spectrum.get_ylim()[1] * 0.88:
+                ax_spectrum.set_ylim(0, max(40.0, ymax * 1.25))
 
-            # Энергия возмущения
             t_data = list(time_history)
             e_data = list(energy_history)
             if len(t_data) > 1:
@@ -212,18 +227,20 @@ def main_gui():
                 ax_energy.set_xlim(t_data[0], t_data[-1] + 0.1)
 
                 cur_e = e_data[-1]
+                stats_hud.set_text(f"RSSI: {last_rssi:3d} dBm  |  VAR: {cur_e:.2f}")
                 if cur_e > 1.2:
-                    status_hud.set_text(f"🔴 ЧЕЛОВЕК ДВИЖЕТСЯ! (CSI возмущение = {cur_e:.2f} | RSSI = {last_rssi} dBm)")
-                    status_hud.set_color("#ff3333")
+                    status_hud.set_text("[ ДВИЖЕНИЕ ОБНАРУЖЕНО ]")
+                    status_hud.set_color("#ef4444")
                 elif cur_e > 0.4:
-                    status_hud.set_text(f"🟡 МИКРО-ДВИЖЕНИЕ / ДЫХАНИЕ (CSI возмущение = {cur_e:.2f} | RSSI = {last_rssi} dBm)")
-                    status_hud.set_color("#ffcc00")
+                    status_hud.set_text("[ МИКРО-ДВИЖЕНИЕ / ДЫХАНИЕ ]")
+                    status_hud.set_color("#f59e0b")
                 else:
-                    status_hud.set_text(f"🟢 ПУСТАЯ КОМНАТА / ШУМ (CSI возмущение = {cur_e:.2f} | RSSI = {last_rssi} dBm)")
-                    status_hud.set_color("#00ff66")
+                    status_hud.set_text("[ СПОКОЙНАЯ ЗОНА ]")
+                    status_hud.set_color("#22c55e")
 
-    anim = FuncAnimation(fig, update, interval=40, blit=False)
+    anim = FuncAnimation(fig, update, interval=40, blit=False, cache_frame_data=False)
     plt.show()
+
 
 
 if __name__ == "__main__":

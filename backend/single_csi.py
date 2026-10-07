@@ -140,51 +140,79 @@ def main():
 
     # GUI
     plt.style.use("dark_background")
-    fig = plt.figure(figsize=(11, 7))
+    fig = plt.figure(figsize=(12, 7.5), facecolor="#090d14")
     fig.canvas.manager.set_window_title("1x ESP32 CSI Live Monitor")
-    gs = fig.add_gridspec(2, 1, height_ratios=[1.3, 1.0])
 
-    ax1 = fig.add_subplot(gs[0])
-    ax1.set_title("CSI ВОДОПАД (ТЕПЛОВАЯ КАРТА ПОДНЕСУЩИХ ВО ВРЕМЕНИ)", color="#00e5ff", fontsize=10, fontweight="bold")
-    ax1.set_ylabel("Время (кадры)")
-    ax1.set_xlabel("Номер поднесущей (1..64)")
-    im = ax1.imshow(np.zeros((HISTORY_LEN, NUM_SUBCARRIERS)), aspect="auto", cmap="plasma")
-    plt.colorbar(im, ax=ax1, pad=0.01)
+    # Сетка с явными безопасными отступами: сверху top=0.86 оставляет место для HUD, hspace=0.36 разделяет графики
+    gs = fig.add_gridspec(
+        2, 1,
+        height_ratios=[1.25, 1.0],
+        top=0.86, bottom=0.09,
+        left=0.08, right=0.93,
+        hspace=0.36
+    )
 
-    ax2 = fig.add_subplot(gs[1])
-    ax2.set_title("МГНОВЕННАЯ АМПЛИТУДА ПОДНЕСУЩИХ |H(f)|", color="#00ff66", fontsize=10, fontweight="bold")
-    ax2.set_ylabel("Амплитуда")
-    ax2.set_xlabel("Поднесущая")
-    ax2.set_ylim(5, 38)
-    ax2.grid(True, linestyle="--", alpha=0.3)
-    line, = ax2.plot(range(NUM_SUBCARRIERS), np.zeros(NUM_SUBCARRIERS), color="#00ff66", lw=2)
+    # Верхняя HUD-панель (y=0.93 гарантированно выше графика top=0.86, ничего не наезжает!)
+    fig.text(0.08, 0.93, "ESP32-S3 CSI RADAR", fontsize=12, fontweight="bold", color="#38bdf8")
+    status_txt = fig.text(0.32, 0.93, "[ ИНИЦИАЛИЗАЦИЯ... ]", fontsize=11, fontweight="bold", color="#38bdf8")
+    stats_txt = fig.text(0.93, 0.93, "RSSI: -- dBm  |  VAR: --", fontsize=10, color="#94a3b8", ha="right")
 
-    status_txt = fig.text(0.02, 0.96, "СТАТУС: ИНИЦИАЛИЗАЦИЯ...", fontsize=11, fontweight="bold", color="#fff")
+    # 1. Водопад (убираем нижние деления x-axis, чтобы исключить наложение на заголовок нижнего графика)
+    ax1 = fig.add_subplot(gs[0], facecolor="#06090e")
+    ax1.set_title("1. CSI WATERFALL (ТЕПЛОВАЯ КАРТА ПОДНЕСУЩИХ ВО ВРЕМЕНИ)", color="#00e5ff", fontsize=10, fontweight="bold", pad=8, loc="left")
+    ax1.set_ylabel("Время (кадры)", color="#94a3b8", fontsize=9)
+    ax1.tick_params(colors="#64748b", labelsize=8)
+    ax1.set_xticklabels([])
 
-    plt.tight_layout()
+    im = ax1.imshow(np.zeros((HISTORY_LEN, NUM_SUBCARRIERS)), aspect="auto", cmap="turbo")
+    cbar = plt.colorbar(im, ax=ax1, pad=0.015, aspect=20)
+    cbar.ax.tick_params(colors="#64748b", labelsize=7)
+    cbar.set_label("Амплитуда", color="#94a3b8", fontsize=8)
+
+    # 2. Мгновенный спектр
+    ax2 = fig.add_subplot(gs[1], facecolor="#06090e")
+    ax2.set_title("2. МГНОВЕННАЯ АМПЛИТУДА ПОДНЕСУЩИХ |H(f)|", color="#00ff66", fontsize=10, fontweight="bold", pad=8, loc="left")
+    ax2.set_ylabel("Амплитуда", color="#94a3b8", fontsize=9)
+    ax2.set_xlabel("Номер поднесущей OFDM (1..64)", color="#94a3b8", fontsize=9)
+    ax2.set_xlim(0, NUM_SUBCARRIERS - 1)
+    ax2.set_ylim(0, 40)
+    ax2.grid(True, linestyle="--", alpha=0.2, color="#334155")
+    ax2.tick_params(colors="#64748b", labelsize=8)
+    (line,) = ax2.plot(range(NUM_SUBCARRIERS), np.zeros(NUM_SUBCARRIERS), color="#00ff66", lw=2)
 
     def update(_):
         with data_lock:
-            if not csi_history: return
+            if not csi_history:
+                return
             arr = np.array(list(csi_history))
             im.set_data(arr)
-            im.set_clim(vmin=np.percentile(arr, 3), vmax=np.percentile(arr, 97))
+            vmin = np.percentile(arr, 3)
+            vmax = np.percentile(arr, 97)
+            if vmax - vmin < 0.5:
+                vmax = vmin + 2.0
+            im.set_clim(vmin=vmin, vmax=vmax)
+
             line.set_ydata(arr[-1])
+            ymax = float(np.max(arr[-1]))
+            if ymax > ax2.get_ylim()[1] * 0.88:
+                ax2.set_ylim(0, max(40.0, ymax * 1.25))
 
             if energy_history:
                 cur_var = energy_history[-1]
+                stats_txt.set_text(f"RSSI: {last_rssi:3d} dBm  |  VAR: {cur_var:.2f}")
                 if cur_var > 1.0:
-                    status_txt.set_text(f"🔴 ЧЕЛОВЕК ДВИЖЕТСЯ (CSI вариация: {cur_var:.2f} | RSSI: {last_rssi} dBm)")
-                    status_txt.set_color("#ff3333")
+                    status_txt.set_text("[ ДВИЖЕНИЕ ОБНАРУЖЕНО ]")
+                    status_txt.set_color("#ef4444")
                 elif cur_var > 0.35:
-                    status_txt.set_text(f"🟡 МИКРО-ДВИЖЕНИЕ / ДЫХАНИЕ (CSI вариация: {cur_var:.2f} | RSSI: {last_rssi} dBm)")
-                    status_txt.set_color("#ffcc00")
+                    status_txt.set_text("[ МИКРО-ДВИЖЕНИЕ / ДЫХАНИЕ ]")
+                    status_txt.set_color("#f59e0b")
                 else:
-                    status_txt.set_text(f"🟢 ПУСТАЯ ЗОНА (CSI вариация: {cur_var:.2f} | RSSI: {last_rssi} dBm)")
-                    status_txt.set_color("#00ff66")
+                    status_txt.set_text("[ СПОКОЙНАЯ ЗОНА ]")
+                    status_txt.set_color("#22c55e")
 
-    anim = FuncAnimation(fig, update, interval=40, blit=False)
+    anim = FuncAnimation(fig, update, interval=40, blit=False, cache_frame_data=False)
     plt.show()
+
 
     if save_file:
         save_file.close()
