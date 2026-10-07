@@ -33,3 +33,7 @@ model.joblib
 dataset.csv
 backend/model.joblib
 backend/dataset.csv
+collected_data.csv
+
+# Wi-Fi credentials (each sketch has a committed secrets.example.h template)
+secrets.h

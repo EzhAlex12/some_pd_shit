@@ -52,6 +52,7 @@ Each node was flashed separately using Arduino IDE.
 ## WiFi Configuration
 
 All nodes were configured to connect to the same WiFi network.
+Credentials live in `firmware/wifi_csi/secrets.h` (git-ignored; copy it from `secrets.example.h`):
 
 ```cpp
 const char* WIFI_SSID = "YOUR_WIFI";

@@ -1,14 +1,12 @@
 #!/bin/bash
 # ============================================================
-#  SGP CSI · Tracker (REAL MODE)  — double-click to start
-#  Connects to your nodes and serves the web (PYTHON POWER button).
-#  Extra args are passed to tracker.py, e.g.  --hosts ip1,ip2,ip3
+#  SGP CSI · Tracker (SIMULATOR, no hardware) — double-click to start
 # ============================================================
 # This file lives in Others/ ; the code lives in backend/ and frontend/
 cd "$(dirname "$0")/.." || exit 1
 clear
 echo "==================================================="
-echo "   SGP CSI  ·  TRACKER (real mode)"
+echo "   SGP CSI  ·  TRACKER (SIMULATOR, no hardware)"
 echo "==================================================="
 echo ""
 
@@ -19,7 +17,7 @@ if [ ! -d "backend/.venv" ]; then
 fi
 source backend/.venv/bin/activate
 python -m pip install -q --upgrade pip
-python -m pip install -q -r backend/requirements.txt
+python -m pip install -q websockets numpy
 
 echo ""
 echo "Starting... (the web will open by itself in the browser)"
@@ -28,9 +26,9 @@ echo "(to stop: press Ctrl + C, or close this window)"
 echo "---------------------------------------------------"
 # opens the web a couple of seconds later, while the tracker starts
 ( sleep 2 && open "frontend/index.html" ) &
-python backend/tracker.py "$@"
+python backend/tracker.py --sim
 
 # keeps the window open if the program ends/errors out
 echo ""
-echo "--- the tracker has stopped ---"
+echo "--- the simulator has stopped ---"
 read -n 1 -s -r -p "Press any key to close..."

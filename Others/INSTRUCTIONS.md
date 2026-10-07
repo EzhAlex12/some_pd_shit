@@ -30,7 +30,8 @@ triangulate a person in a room and see them move in real time in 3D.
    * **WebSockets** by *Markus Sattler*
    * **Adafruit NeoPixel**
 4. Откройте `firmware/wifi_csi/wifi_csi.ino`.
-5. В начале скетча введите SSID и пароль вашей 2.4 GHz Wi-Fi сети:
+5. Скопируйте `firmware/wifi_csi/secrets.example.h` в `secrets.h` (в той же папке; файл в `.gitignore`)
+   и введите SSID и пароль вашей 2.4 GHz Wi-Fi сети:
    ```cpp
    const char* WIFI_SSID  = "YOUR_WIFI_2.4G";
    const char* WIFI_PASS  = "YOUR_PASSWORD";

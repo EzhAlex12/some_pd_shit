@@ -40,10 +40,11 @@ frame_times = deque(maxlen=30)
 last_rssi = -60
 start_time = time.time()
 smoothed_variance = 0.0
+VAR_WINDOW = 12
+source_label = "ИНИЦИАЛИЗАЦИЯ"
 
-# Заполняем начальную историю тишиной
-for _ in range(HISTORY_LEN):
-    csi_history.append(np.ones(NUM_SUBCARRIERS) * 15.0 + np.random.normal(0, 0.1, NUM_SUBCARRIERS))
+# История НЕ заполняется фейковым фоном: иначе первые реальные кадры дают
+# огромную дисперсию относительно него и ложное «движение» на старте.
 
 
 def push_csi_frame(amps, rssi_val=-55):
@@ -63,15 +64,12 @@ def push_csi_frame(amps, rssi_val=-55):
         time_history.append(rel_time)
         frame_times.append(now)
 
-        # Дисперсия за последние 12 кадров (~0.48 с при 25 Гц)
-        if len(csi_history) >= 8:
-            recent = np.array(list(csi_history)[-12:])
+        # Дисперсия за последние 12 кадров (~0.48 с при 25 Гц); пока окно не набралось — 0
+        if len(csi_history) >= VAR_WINDOW:
+            recent = np.array(list(csi_history)[-VAR_WINDOW:])
             var_raw = float(np.mean(np.var(recent, axis=0)))
-        else:
-            var_raw = 0.05
-
-        # EMA фильтрация
-        smoothed_variance = 0.75 * smoothed_variance + 0.25 * var_raw
+            # EMA фильтрация
+            smoothed_variance = 0.75 * smoothed_variance + 0.25 * var_raw
         energy_history.append(smoothed_variance)
 
 
@@ -121,15 +119,21 @@ def run_serial(port, baud=115200):
         print(f"[!] Ошибка открытия порта {port}: {e}")
         return
 
+    bad_lines = 0
     while True:
         try:
-            line = ser.readline().decode("utf-8", errors="ignore").strip()
-            if not line:
-                continue
-
+            raw = ser.readline()
+        except serial.SerialException as e:
+            # плату выдернули — выходим, а не крутим пустой цикл на 100% CPU
+            print(f"[!] Порт {port} потерян: {e}")
+            return
+        line = raw.decode("utf-8", errors="ignore").strip()
+        if not line:
+            continue
+        try:
             # Формат 1: CSV строка вида "CSI,rssi,amp0,amp1,...,amp63"
             if line.startswith("CSI,") or line.startswith("CSI:"):
-                parts = line.split(",")[1:]
+                parts = line[4:].split(",")
                 rssi = int(parts[0])
                 amps = [float(x) for x in parts[1:]]
                 push_csi_frame(amps, rssi)
@@ -138,8 +142,10 @@ def run_serial(port, baud=115200):
             elif line.startswith("{") and "csi" in line:
                 d = json.loads(line)
                 push_csi_frame(d["csi"], d.get("rssi", -55))
-        except Exception:
-            pass
+        except (ValueError, KeyError, IndexError) as e:
+            bad_lines += 1
+            if bad_lines <= 5:
+                print(f"[!] Не удалось разобрать строку ({e}): {line[:80]}")
 
 
 def run_websocket(url):
@@ -225,8 +231,12 @@ def main_gui(motion_threshold=2.5):
     ax_energy.legend(loc="upper right", fontsize=8, facecolor="#111827", edgecolor="#374151")
 
     # Единая верхняя панель (HUD)
-    fig.text(0.5, 0.96, "ESP32-S3  •  CSI РАДАР ПРИСУТСТВИЯ И ДВИЖЕНИЯ",
-             fontsize=12, fontweight="bold", ha="center", va="center", color="#38bdf8")
+    is_sim = source_label.startswith("СИМУЛЯЦИЯ")
+    if is_sim:
+        fig.canvas.manager.set_window_title("ESP32 Wi-Fi CSI Live Inspector  —  !!! СИМУЛЯЦИЯ, НЕ РЕАЛЬНЫЕ ДАННЫЕ !!!")
+    fig.text(0.5, 0.96, f"ESP32-S3  •  CSI РАДАР  •  ИСТОЧНИК: {source_label}",
+             fontsize=12, fontweight="bold", ha="center", va="center",
+             color="#e879f9" if is_sim else "#38bdf8")
     status_hud = fig.text(0.5, 0.90, "[ ИНИЦИАЛИЗАЦИЯ... ]   |   RSSI: -- dBm   |   ВОЗМУЩЕНИЕ: --   |   ЧАСТОТА: -- Гц",
                           fontsize=10.5, fontweight="bold", ha="center", va="center", color="#94a3b8")
 
@@ -235,16 +245,23 @@ def main_gui(motion_threshold=2.5):
             if not csi_history:
                 return
 
-            arr = np.array(list(csi_history))
+            rows = np.array(list(csi_history))
+            arr = np.full((HISTORY_LEN, NUM_SUBCARRIERS), np.nan)   # пустые строки водопада
+            arr[-len(rows):] = rows
             im_waterfall.set_data(arr)
-            vmin = np.percentile(arr, 3)
-            vmax = np.percentile(arr, 97)
+            vmin = np.percentile(rows, 3)
+            vmax = np.percentile(rows, 97)
             if vmax - vmin < 2.0:
                 vmax = vmin + 4.0
             im_waterfall.set_clim(vmin=vmin, vmax=vmax)
 
             # Текущий спектр
-            line_spec.set_ydata(arr[-1])
+            line_spec.set_ydata(rows[-1])
+
+            if frame_times and (time.time() - frame_times[-1]) > 2.0:
+                status_hud.set_text("[ НЕТ ДАННЫХ ]   |   нет кадров больше 2 с (плата / порт / сокет)")
+                status_hud.set_color("#94a3b8")
+                return
 
             # Частота кадров
             fps = 0.0
@@ -291,10 +308,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.serial:
+        source_label = f"ПЛАТА {args.serial}"
         threading.Thread(target=run_serial, args=(args.serial, args.baud), daemon=True).start()
     elif args.ws:
+        source_label = f"WS {args.ws}"
         run_websocket(args.ws)
     else:
+        source_label = "СИМУЛЯЦИЯ (--sim)" if args.sim else "СИМУЛЯЦИЯ — ИСТОЧНИК НЕ УКАЗАН"
         threading.Thread(target=run_simulation, daemon=True).start()
 
     main_gui(motion_threshold=args.threshold)

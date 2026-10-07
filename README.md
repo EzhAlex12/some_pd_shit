@@ -46,7 +46,7 @@ some_pd_shit/
 ├── INSTRUCTIONS_SINGLE_CSI.md    # Руководство по 1 плате (macOS / Windows / Linux)
 ├── firmware/
 │   ├── single_node_csi/          # Прошивка для 1 платы (USB Serial stream)
-│   ├── raw_csi_streamer/         # Прошивка 1 платы (Serial + WebSocket)
+│   ├── raw_csi_streamer/         # Прошивка 1 платы (только USB Serial)
 │   └── wifi_csi/                 # Прошивка для многонодного 3D радара
 ├── backend/
 │   ├── single_csi.py             # Live-монитор поднесущих (водопад + амплитуды)
@@ -60,6 +60,13 @@ some_pd_shit/
     ├── INSTRUCTIONS.md           # Руководство по 4 платам (3D Radar)
     └── START-TRACKER-MAC.command # Лаунчер для Mac
 ```
+
+---
+
+## 🔑 Wi-Fi пароль для прошивок
+
+Пароли больше не хранятся в `.ino`. В папке каждого скетча лежит `secrets.example.h` —
+скопируйте его в `secrets.h` рядом и впишите SSID/пароль 2.4 ГГц сети. `secrets.h` в `.gitignore`.
 
 ---
 

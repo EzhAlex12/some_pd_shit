@@ -31,8 +31,7 @@
 #define NODE_ID        0                 // <<< CHANGE THIS ON EACH BOARD: 0,1,2,3
                                          //     (0=MASTER, 1, 2, 3)
 
-const char* WIFI_SSID  = "ES";          // <<< your Wi-Fi SSID (2.4GHz)
-const char* WIFI_PASS  = "31415926";   // <<< your password
+#include "secrets.h"   // WIFI_SSID / WIFI_PASS — copy secrets.example.h -> secrets.h (git-ignored)
 
 const uint16_t WS_PORT = 81;             // WebSocket port
 #define MDNS_BASE       "sgpcsi"         // mDNS: sgpcsi-<ID>.local
@@ -61,10 +60,19 @@ WebSocketsServer webSocket(WS_PORT);
 WiFiUDP udpStim;
 
 // --- RSSI Promiscuous Buffer & State ---
+// Written by the Wi-Fi task (sniffer callback), read by loop(): guarded by g_mux.
 volatile int8_t  g_rssi_buf[RSSI_WINDOW_LEN];
 volatile int     g_buf_head = 0;
 volatile int     g_buf_count = 0;
 volatile int8_t  g_last_rssi = -60;
+portMUX_TYPE     g_mux = portMUX_INITIALIZER_UNLOCKED;
+
+// Only frames TRANSMITTED BY OUR ACCESS POINT are used (802.11 addr2 == BSSID).
+// Without this filter the window mixes RSSI from every phone/AP/node on the channel,
+// and sigma measures "who is talking" instead of the AP->node link disturbance.
+volatile uint8_t g_bssid[6] = {0};
+volatile bool    g_bssid_ok = false;
+volatile uint32_t g_rx_total = 0;        // accepted AP frames (diagnostics, see [RATE] log)
 
 volatile float   g_energy = 0.0f;        // sigma (standard deviation) in dB
 volatile bool    g_presence = false;     // Local Method 1 decision
@@ -146,17 +154,27 @@ void updateBuzzer() {
 //  Promiscuous RX callback: captures incoming frames & extracts RSSI
 // ---------------------------------------------------------------------------
 void IRAM_ATTR wifiSnifferCallback(void* buf, wifi_promiscuous_pkt_type_t type) {
-  if (!buf) return;
+  if (!buf || !g_bssid_ok) return;
   wifi_promiscuous_pkt_t* pkt = (wifi_promiscuous_pkt_t*)buf;
-  int8_t r = pkt->rx_ctrl.rssi;
+  if (pkt->rx_ctrl.sig_len < 16) return;            // too short to carry addr2
 
+  // 802.11 MAC header: FC(2) Dur(2) addr1(6) addr2(6) ... -> transmitter = payload[10..15]
+  const uint8_t* ta = pkt->payload + 10;
+  for (int k = 0; k < 6; k++) {
+    if (ta[k] != g_bssid[k]) return;                // not from our AP
+  }
+
+  int8_t r = pkt->rx_ctrl.rssi;
   if (r < 0 && r > -110) {
+    portENTER_CRITICAL(&g_mux);
     g_last_rssi = r;
     g_rssi_buf[g_buf_head] = r;
     g_buf_head = (g_buf_head + 1) % RSSI_WINDOW_LEN;
     if (g_buf_count < RSSI_WINDOW_LEN) {
       g_buf_count++;
     }
+    g_rx_total++;
+    portEXIT_CRITICAL(&g_mux);
   }
 }
 
@@ -164,13 +182,16 @@ void IRAM_ATTR wifiSnifferCallback(void* buf, wifi_promiscuous_pkt_type_t type) 
 //  Calculate Standard Deviation (sigma) of RSSI over the sliding window
 // ---------------------------------------------------------------------------
 float computeRssiStdDev() {
-  int count = g_buf_count;
-  if (count < 15) return 0.0f;
-
   int8_t copy_buf[RSSI_WINDOW_LEN];
+  int count;
+  // consistent snapshot: the callback may run on the other core at the same time
+  portENTER_CRITICAL(&g_mux);
+  count = g_buf_count;
   for (int i = 0; i < count; i++) {
     copy_buf[i] = g_rssi_buf[i];
   }
+  portEXIT_CRITICAL(&g_mux);
+  if (count < 15) return 0.0f;
 
   float sum = 0.0f;
   for (int i = 0; i < count; i++) {
@@ -201,24 +222,46 @@ void enableSniffer() {
 
 // ---------------------------------------------------------------------------
 void connectWiFi() {
+  g_bssid_ok = false;                    // sniffer ignores everything until we know our AP
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.printf("[WiFi] connecting to %s", WIFI_SSID);
   ledMode = LED_CONNECTING;
   uint32_t start = millis();
+  uint32_t attemptStart = start;
   while (WiFi.status() != WL_CONNECTED) {
     updateLED();
+    updateBuzzer();                      // so the FAIL beep is actually heard while stuck here
     if (millis() - start > 12000) ledMode = LED_FAIL;
+    // Retry from scratch every 15 s (wrong password / AP rebooted / out of range):
+    // previously the board waited forever after a single WiFi.begin().
+    if (millis() - attemptStart > 15000) {
+      Serial.printf("\n[WiFi] still not connected (status=%d), retrying", (int)WiFi.status());
+      WiFi.disconnect();
+      delay(100);
+      WiFi.begin(WIFI_SSID, WIFI_PASS);
+      attemptStart = millis();
+    }
     delay(50);
     if ((millis() - start) % 400 < 50) Serial.print(".");
   }
   ledMode = LED_CONNECTED;
+
+  // remember our AP and start a fresh RSSI window (old samples may be from before the drop)
+  uint8_t* b = WiFi.BSSID();
+  portENTER_CRITICAL(&g_mux);
+  for (int k = 0; k < 6; k++) g_bssid[k] = b ? b[k] : 0;
+  g_buf_head = 0;
+  g_buf_count = 0;
+  portEXIT_CRITICAL(&g_mux);
+  g_bssid_ok = (b != nullptr);
+
   Serial.println();
-  Serial.printf("[WiFi] OK  IP=%s  GW=%s  RSSI=%d\n",
+  Serial.printf("[WiFi] OK  IP=%s  GW=%s  RSSI=%d  BSSID=%s  CH=%d\n",
                 WiFi.localIP().toString().c_str(),
                 WiFi.gatewayIP().toString().c_str(),
-                WiFi.RSSI());
+                WiFi.RSSI(), WiFi.BSSIDstr().c_str(), WiFi.channel());
   Serial.printf("[NODE] id=%d  ws://%s:%d\n",
                 NODE_ID, WiFi.localIP().toString().c_str(), WS_PORT);
 }
@@ -319,6 +362,19 @@ void loop() {
     g_presence = (cur_sigma > F_FACTOR * g_baseline_sigma);
 
     broadcastOwn();
+  }
+
+  // Diagnostics: how many AP frames/s actually reach the RSSI window.
+  // 128 samples at ~10 frames/s (beacons only) = ~13 s window -> slow reaction.
+  static uint32_t lastRateLog = 0, lastRx = 0;
+  if (now - lastRateLog >= 5000) {
+    uint32_t rx = g_rx_total;
+    Serial.printf("[RATE] %.1f AP frames/s -> RSSI window ~%.1f s  sigma=%.3f  base=%.3f  p=%d\n",
+                  (rx - lastRx) * 1000.0f / (now - lastRateLog),
+                  (rx - lastRx) ? RSSI_WINDOW_LEN * (now - lastRateLog) / 1000.0f / (rx - lastRx) : 0.0f,
+                  g_energy, g_baseline_sigma, g_presence ? 1 : 0);
+    lastRateLog = now;
+    lastRx = rx;
   }
 
   // Auto-reconnect if Wi-Fi drops

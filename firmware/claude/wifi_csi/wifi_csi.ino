@@ -15,8 +15,7 @@
 // ====================== CONFIGURATION ======================
 #define NODE_ID        0                 // <<< CHANGE THIS ON EACH BOARD: 0,1,2,3
 
-const char* WIFI_SSID  = "ES";          // <<< your Wi-Fi SSID (2.4GHz)
-const char* WIFI_PASS  = "31415926";   // <<< your password
+#include "secrets.h"   // WIFI_SSID / WIFI_PASS — copy secrets.example.h -> secrets.h (git-ignored)
 
 const uint16_t WS_PORT = 81;             // WebSocket port
 #define MDNS_BASE       "sgpcsi"         // mDNS: sgpcsi-<ID>.local

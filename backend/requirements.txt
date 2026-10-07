@@ -6,7 +6,10 @@ joblib>=1.3
 
 # Визуализация (csi_monitor.py, single_csi.py)
 matplotlib>=3.7
-packaging
 
 # Serial (data_parser.py --serial, csi_monitor.py --serial, single_csi.py)
 pyserial>=3.5
+
+# WebSocket-клиент для data_parser.py --ws и csi_monitor.py --ws
+# (import websocket — это пакет websocket-client, НЕ websockets)
+websocket-client>=1.6

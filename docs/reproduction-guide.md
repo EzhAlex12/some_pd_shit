@@ -101,12 +101,13 @@ Wait until installation completes.
 1. Open the firmware file:
     
     ```
-    firmware/wifi_csi.ino
+    firmware/wifi_csi/wifi_csi.ino
     ```
     
-2. Locate WiFi configuration section
+2. Copy `firmware/wifi_csi/secrets.example.h` to `secrets.h` in the same folder
+   (it is git-ignored — never commit real passwords)
     
-3. Replace with your actual WiFi credentials:
+3. Put your actual WiFi credentials into `secrets.h`:
     
     ```cpp
     const char* WIFI_SSID = "YOUR_WIFI";

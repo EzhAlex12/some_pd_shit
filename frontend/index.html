@@ -121,7 +121,7 @@
     </div>
     <button id="pybtn" class="pybtn" style="margin-top:8px">⚡ PYTHON POWER</button>
     <div class="sub" style="margin:6px 0 0">
-      Advanced filters (Kalman + posture). Requires running <code>python/tracker.py</code>.
+      Advanced filters (Kalman + posture). Requires running <code>backend/tracker.py</code>.
     </div>
     <div style="margin-top:8px" class="pill" id="connState">DISCONNECTED</div>
   </div>
@@ -155,8 +155,8 @@
     <div class="slider"><input id="sharp" type="range" min="1" max="8" step="0.5" value="3"><span class="val" id="sharpV">3</span></div>
     <label>Position smoothing</label>
     <div class="slider"><input id="smooth" type="range" min="0" max="0.95" step="0.05" value="0.8"><span class="val" id="smoothV">0.8</span></div>
-    <label>Presence threshold (0–1)</label>
-    <div class="slider"><input id="thr" type="range" min="0" max="1" step="0.02" value="0.28"><span class="val" id="thrV">0.28</span></div>
+    <label>Presence threshold (0–1, above the noise floor)</label>
+    <div class="slider"><input id="thr" type="range" min="0" max="1" step="0.01" value="0.05"><span class="val" id="thrV">0.05</span></div>
     <label>Posture sensitivity (crouching)</label>
     <div class="slider"><input id="postSens" type="range" min="0" max="3" step="0.1" value="1"><span class="val" id="postSensV">1</span></div>
     <button class="ghost" id="recal" style="margin-top:12px">Recalibrate empty environment</button>
@@ -179,9 +179,11 @@
     <h3>⚡ Python engine not detected</h3>
     <p>For the advanced filters (Kalman + AI) first start the engine with a
        <b>double click</b>:</p>
-    <p class="path">wifi&nbsp;csi ▸ python ▸<br><b>START-TRACKER-MAC.command</b></p>
-    <p class="small">A Terminal will open; this web app will connect on its own.<br>
-       Just want to try it without the boards? use <b>TEST-WITHOUT-BOARDS-MAC.command</b>.</p>
+    <p class="path">some_pd_shit ▸ Others ▸<br><b>START-TRACKER-MAC.command</b> / <b>START-TRACKER-WINDOWS.bat</b></p>
+    <p class="small">or in a terminal: <code>python3 backend/tracker.py</code><br>
+       A Terminal will open; this web app will connect on its own.<br>
+       Just want to try it without the boards? use <b>TEST-WITHOUT-BOARDS-MAC.command</b> / <b>-WINDOWS.bat</b>
+       (or <code>tracker.py --sim</code>).</p>
     <button onclick="document.getElementById('pyhelp').style.display='none'">Got it</button>
   </div>
 </div>
@@ -206,20 +208,26 @@ let nodes3 = [
 ];
 let energies=[0,0,0,0], rssis=[0,0,0,0], online=[false,false,false,false];
 // per-node autocalibration: each one has its own scale -> we normalize to 0..1
-let neMin=[1e9,1e9,1e9,1e9], neMax=[1e-3,1e-3,1e-3,1e-3], ne=[0,0,0,0];
+// (same algorithm as tracker.py normalize(): low-envelope baseline, RELATIVE threshold, peak)
+const REL_THR=2.0, MIN_MARGIN=0.05, MIN_SPAN=0.3, WARMUP=40;
+let neMin=[null,null,null,null], neMax=[1e-3,1e-3,1e-3,1e-3];
+let neCount=[0,0,0,0], ne=[0,0,0,0];
 let person = new THREE.Vector2(2.5,2), target = new THREE.Vector2(2.5,2);
 let prevP = new THREE.Vector2(2.5,2);
-let present=false, demoMode=false, demoT=0;
+let present=false, demoMode=false, demoT=0, demoAcc=0;
 let crouchAmt=0, walkPhase=0, heading=0, eMax=0.001, demoCrouch=0;
-const cfg = { sharp:3, smooth:0.8, thr:0.28, postSens:1.0 };
+const cfg = { sharp:3, smooth:0.8, thr:0.05, postSens:1.0 };
 const lerp=(a,b,t)=>a+(b-a)*t;
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const SAMPLE_HZ=20;    // nodes report at 20 Hz; filters below are defined per sample, not per frame
 
-// restore saved config
+// restore saved config (validated: another page version may have saved a different node count)
 try{ const s=JSON.parse(localStorage.getItem('csi_cfg')||'{}');
-  if(s.nodes3) nodes3=s.nodes3; if(s.room) room=s.room; }catch(e){}
+  if(Array.isArray(s.nodes3)) s.nodes3.slice(0,nodes3.length).forEach((n,i)=>{
+    if(n && isFinite(n.x) && isFinite(n.y) && isFinite(n.z)) nodes3[i]={x:+n.x,y:+n.y,z:+n.z}; });
+  if(s.room && s.room.w>0 && s.room.h>0) room={w:+s.room.w,h:+s.room.h}; }catch(e){}
 
-function saveCfg(){ localStorage.setItem('csi_cfg', JSON.stringify({nodes3,room})); }
+function saveCfg(){ try{ localStorage.setItem('csi_cfg', JSON.stringify({nodes3,room})); }catch(e){} }
 
 // ====================== THREE.JS ======================
 const scene = new THREE.Scene();
@@ -439,21 +447,25 @@ function syncNodeMesh(i){
 // ====================== TRIANGULATION ======================
 // autocalibration: each node learns its own floor (min) and its peak (max)
 // and we return ne[i] in 0..1, so that ALL nodes are comparable.
-function calibrate(){
-  for(let i=0;i<4;i++){
-    const e=energies[i];
-    if(neMin[i]>1e8){ neMin[i]=e; neMax[i]=e+1e-3; ne[i]=0; continue; }  // first sample
-    // floor (empty environment): drops fast, rises very slowly
-    if(e<neMin[i]) neMin[i]+=0.08*(e-neMin[i]); else neMin[i]+=0.0015*(e-neMin[i]);
-    // peak (person very close): rises instantly, decays slowly
-    if(e>neMax[i]) neMax[i]=e; else neMax[i]+=0.0020*(e-neMax[i]);
-    if(neMax[i]<neMin[i]+1e-3) neMax[i]=neMin[i]+1e-3;
-    ne[i]=clamp((e-neMin[i])/(neMax[i]-neMin[i]),0,1);
-  }
+// Called ONCE PER RECEIVED SAMPLE (not per animation frame), so the time constants
+// don't depend on the monitor refresh rate. ne=0 means "below the presence threshold".
+function calibrateNode(i, e){
+  if(!(e>0)){ ne[i]=0; return; }        // firmware sends e=0 until its RSSI buffer fills: "not ready", not a quiet room
+  if(neMin[i]===null){ neMin[i]=e; neMax[i]=e+MIN_SPAN; neCount[i]=0; }
+  // floor (empty environment): drops fast, rises very slowly (~100 s)
+  if(e<neMin[i]) neMin[i]+=0.08*(e-neMin[i]); else neMin[i]+=0.0005*(e-neMin[i]);
+  if(++neCount[i]<=WARMUP){ ne[i]=0; return; }
+  // threshold relative to the baseline (sigma fluctuates proportionally to its own level)
+  const th=Math.max(neMin[i]*REL_THR, neMin[i]+MIN_MARGIN);
+  // peak (person very close): rises instantly, decays slowly
+  if(e>neMax[i]) neMax[i]=e; else neMax[i]+=0.0020*(e-neMax[i]);
+  if(neMax[i]<th+MIN_SPAN) neMax[i]=th+MIN_SPAN;
+  ne[i]=clamp((e-th)/(neMax[i]-th),0,1);
 }
+function resetCalib(i){ neMin[i]=null; neMax[i]=1e-3; neCount[i]=0; ne[i]=0; }
+function resetAllCalib(){ for(let i=0;i<4;i++) resetCalib(i); }
 
-function triangulate(){
-  calibrate();
+function triangulate(dt){
 
   // weight = NORMALIZED energy raised to "sharpness" (emphasizes the dominant node)
   let w=[0,0,0,0], sum=0, maxN=0, sumNe=0, dom=0;
@@ -478,10 +490,12 @@ function triangulate(){
     target.set(tx,ty);
   }
 
-  // temporal filter: smoothing + speed limit (anti-jump)
-  const a=1-cfg.smooth;
+  // temporal filter: smoothing + speed limit (anti-jump). Originally tuned per frame at
+  // 60 fps; scaled by dt so 120/144 Hz monitors behave the same as 60 Hz
+  const k=dt*60;
+  const a=1-Math.pow(cfg.smooth,k);
   let nx=lerp(person.x,target.x,a), ny=lerp(person.y,target.y,a);
-  const maxStep=0.25;                                   // m per frame
+  const maxStep=0.25*k;                                 // 0.25 m per 60 Hz frame
   const dx=nx-person.x, dy=ny-person.y, d=Math.hypot(dx,dy);
   if(d>maxStep){ nx=person.x+dx/d*maxStep; ny=person.y+dy/d*maxStep; }
   person.set(nx,ny);
@@ -512,8 +526,11 @@ function connectNode(i){
   try{ w=new WebSocket(`ws://${hostFor(i)}:81`); }
   catch(e){ scheduleReconnect(i); return; }
   conns[i]=w;
+  w.onopen=()=>resetCalib(i);           // the room may have changed while the node was away
   w.onmessage=ev=>{ try{ const d=JSON.parse(ev.data);
-    energies[i]=d.e; rssis[i]=d.rssi; lastMsg[i]=performance.now();
+    if(!isFinite(d.e)) return;
+    energies[i]=+d.e; rssis[i]=d.rssi; lastMsg[i]=performance.now();
+    if(!demoMode) calibrateNode(i, energies[i]);
   }catch(e){} };
   w.onclose=()=>{ conns[i]=null; scheduleReconnect(i); };
   w.onerror=()=>{ try{ w.close(); }catch(e){} };
@@ -529,13 +546,11 @@ function stopLive(){
     if(conns[i]){ try{ conns[i].onclose=null; conns[i].close(); }catch(e){} conns[i]=null; } }
 }
 
-function startDemo(){
-  demoMode=true; modeEl.textContent='SIMULATION'; modeEl.className='pill demo';
-}
+function startDemo(){ setDemo(true); }
 
 // ====================== PYTHON POWER MODE ======================
-// A Python backend (python/tracker.py) connects to the 4 nodes, applies
-// filters (2D Kalman + least-squares trilateration + posture) and serves
+// A Python backend (backend/tracker.py) connects to the nodes, applies
+// filters (weighted centroid + 2D Kalman + posture heuristic) and serves
 // us a SINGLE already-processed WebSocket. Here we just consume it.
 const PY_URL='ws://localhost:8765';
 let pyMode=false, pyWs=null, pyData=null, pyLastMsg=0, pyRc=null, pyCheck=null;
@@ -586,17 +601,30 @@ function enablePython(on){
   }
 }
 function demoStep(dt){
-  demoT+=dt;
-  const px=room.w*0.5+room.w*0.32*Math.sin(demoT*0.45);
-  const py=room.h*0.5+room.h*0.32*Math.sin(demoT*0.63+1.2);
-  // crouches down every so often
-  demoCrouch = clamp((Math.sin(demoT*0.5)-0.4)*2.5, 0, 1);
-  const tall = 1 - demoCrouch*0.6;   // crouching disturbs less
-  for(let i=0;i<4;i++){
-    const d=Math.hypot(nodes3[i].x-px,nodes3[i].y-py);
-    energies[i]=(1.6/(d*d+0.4))*tall + Math.sin(demoT*7+i)*0.04;
-    rssis[i]=-45-Math.round(d*4);
+  // synthetic samples are produced at the same 20 Hz as real nodes
+  demoAcc+=dt;
+  while(demoAcc>=1/SAMPLE_HZ){
+    demoAcc-=1/SAMPLE_HZ; demoT+=1/SAMPLE_HZ;
+    const px=room.w*0.5+room.w*0.32*Math.sin(demoT*0.45);
+    const py=room.h*0.5+room.h*0.32*Math.sin(demoT*0.63+1.2);
+    // crouches down every so often
+    demoCrouch = clamp((Math.sin(demoT*0.5)-0.4)*2.5, 0, 1);
+    const tall = 1 - demoCrouch*0.6;   // crouching disturbs less
+    for(let i=0;i<4;i++){
+      const d=Math.hypot(nodes3[i].x-px,nodes3[i].y-py);
+      energies[i]=(1.6/(d*d+0.4))*tall + Math.sin(demoT*7+i)*0.04;
+      rssis[i]=-45-Math.round(d*4);
+      calibrateNode(i, energies[i]);
+    }
   }
+}
+
+// demo <-> live switch: never let calibration learned on synthetic data leak into live (and back)
+let lastDemo=null;
+function setDemo(on){
+  if(on!==lastDemo){ resetAllCalib(); lastDemo=on; }
+  demoMode=on;
+  if(on){ modeEl.textContent='SIMULATION'; modeEl.className='pill demo'; }
 }
 
 // ====================== UI ======================
@@ -646,7 +674,7 @@ document.getElementById('demo').onclick=()=>{
     clearTimeout(pyRc); if(pyWs){ try{pyWs.onclose=null;pyWs.close();}catch(e){} pyWs=null; } pyData=null; }
   stopLive(); setConn('DEMO','demo'); startDemo(); };
 document.getElementById('pybtn').onclick=()=>enablePython(!pyMode);
-document.getElementById('recal').onclick=()=>{ for(let i=0;i<4;i++){ neMin[i]=energies[i]; neMax[i]=energies[i]+1e-3; } };
+document.getElementById('recal').onclick=()=>{ resetAllCalib(); toast('Recalibrating: keep the room empty for ~2 s'); };
 document.getElementById('vDrone').onclick=()=>setView('drone');
 document.getElementById('vTop').onclick=()=>setView('top');
 document.getElementById('vFree').onclick=()=>setView('free');
@@ -679,28 +707,30 @@ function animate(now){
       ne[i]=n.ne||0; rssis[i]=n.rssi||0; online[i]=!!n.on; }
     present=!!pyData.present;
     if(present) target.set(pyData.x, pyData.y);
-    person.lerp(target, 0.5);                       // already comes smoothed from Python
-    demoMode=false;
+    person.lerp(target, 1-Math.pow(0.5, dt*60));    // already comes smoothed from Python
+    demoMode=false; lastDemo=false;
     modeEl.textContent='PYTHON'; modeEl.className='pill ok';
     setConn('PYTHON ✓ (Kalman)','ok');
   } else if(pyMode){
-    // python enabled but no data yet -> simulation while it connects
-    demoMode=true; for(let i=0;i<4;i++) online[i]=true;
+    // python enabled but no data yet -> simulation while it connects (clearly labeled)
+    setDemo(true); for(let i=0;i<4;i++) online[i]=true;
     setConn('CONNECTING PYTHON…','');
-    demoStep(dt); triangulate();
+    demoStep(dt); triangulate(dt);
   } else if(wantLive){
     let live=0;
-    for(let i=0;i<4;i++){ const r=(now-lastMsg[i])<2000; online[i]=r; if(r) live++; }
-    demoMode = lastMsg.every(t=>(now-t)>4000);      // no data -> simulation
+    for(let i=0;i<4;i++){ const r=lastMsg[i]>0 && (now-lastMsg[i])<2000; online[i]=r; if(r) live++;
+      else if(!demoMode) ne[i]=0; }                // a silent node must not keep its last energy
+    // no real sample from ANY node in the last 4 s -> simulation (also right after page load)
+    setDemo(!lastMsg.some(t=>t>0 && (now-t)<4000));
     if(demoMode) for(let i=0;i<4;i++) online[i]=true;
-    if(!demoMode){ modeEl.textContent='LIVE'; modeEl.className='pill ok'; }
-    setConn(live===4?'LIVE 4/4':live>0?('LIVE '+live+'/4'):'SEARCHING FOR NODES…', live>0?'ok':'');
+    else { modeEl.textContent='LIVE'; modeEl.className='pill ok'; }
+    setConn(live===4?'LIVE 4/4':live>0?('LIVE '+live+'/4'):'SEARCHING FOR NODES… (showing SIMULATION)', live>0?'ok':'');
     if(demoMode) demoStep(dt);
-    triangulate();
+    triangulate(dt);
   } else {
     for(let i=0;i<4;i++) online[i]=true;            // manual demo
     if(demoMode) demoStep(dt);
-    triangulate();
+    triangulate(dt);
   }
 
   // speed and heading
@@ -754,7 +784,7 @@ function animate(now){
     bars[i].dot.className='dot'+(online[i]?' on':'');
   }
 
-  presEl.textContent=present?'PRESENCE DETECTED':'NO PRESENCE';
+  presEl.textContent=(demoMode?'[SIM] ':'')+(present?'PRESENCE DETECTED':'NO PRESENCE');
   presEl.className='big presence'+(present?' live':'');
   coordEl.textContent=present?`x: ${person.x.toFixed(2)} m   y: ${person.y.toFixed(2)} m`:'x: --  y: --';
   if(present){ const isCrouch=crouchAmt>0.5;

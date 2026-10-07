@@ -38,9 +38,16 @@ RATE_HZ    = 20
 WINDOW     = 20           # samples (~1 s) for the AI statistics
 
 SHARP      = 3.0
-PRESENCE   = 0.28
+PRESENCE   = 0.05         # ne is measured ABOVE the per-node presence threshold (0 = below it)
 POST_SENS  = 1.0
-MIN_SPAN   = 0.3          # Minimum baseline-to-peak energy span (prevents noise amplification in empty room)
+MIN_SPAN   = 0.3          # Minimum threshold-to-peak energy span (keeps ne from saturating on small excursions)
+# Presence threshold is RELATIVE to the quiet-room baseline (same idea as the firmware's
+# sigma > f * <sigma_noise>): the node's sigma(RSSI) fluctuates proportionally to its own
+# level, so a fixed absolute margin is either too tight (false presence) or too loose.
+REL_THR    = 2.0          # th = baseline * REL_THR (firmware uses f = 2.2); <1.5 gives false presence
+                          # on strong links where RSSI is quantized to 1 dB and sigma is spiky
+MIN_MARGIN = 0.05         # ...but at least baseline + 0.05 dB (for near-zero baselines)
+WARMUP     = 40           # samples (~2 s) per node used only to learn the baseline before reporting
 
 HERE        = os.path.dirname(os.path.abspath(__file__))
 DATASET     = os.path.join(HERE, "dataset.csv")
@@ -50,8 +57,9 @@ MODEL_PATH  = os.path.join(HERE, "model.joblib")
 energy    = [0.0] * NUM_NODES
 rssi      = [0] * NUM_NODES
 last_seen = [0.0] * NUM_NODES
-ne_min    = [None] * NUM_NODES
-ne_max    = [1e-3] * NUM_NODES
+ne_min    = [None] * NUM_NODES   # low envelope (quiet-room baseline) of e
+ne_max    = [1e-3] * NUM_NODES   # tracked peak of e
+ne_count  = [0] * NUM_NODES      # samples since (re)calibration
 
 room      = {"w": 5.0, "h": 4.0}
 
@@ -76,6 +84,20 @@ node_pos = default_node_positions(NUM_NODES, room["w"], room["h"])
 clients  = set()
 
 
+def set_hosts(hosts):
+    """Re-initialize all per-node state for a new list of node hosts (--hosts)."""
+    global NODE_HOSTS, NUM_NODES, energy, rssi, last_seen, ne_min, ne_max, ne_count, node_pos
+    NODE_HOSTS = list(hosts)
+    NUM_NODES  = len(NODE_HOSTS)
+    energy    = [0.0] * NUM_NODES
+    rssi      = [0] * NUM_NODES
+    last_seen = [0.0] * NUM_NODES
+    ne_min    = [None] * NUM_NODES
+    ne_max    = [1e-3] * NUM_NODES
+    ne_count  = [0] * NUM_NODES
+    node_pos  = default_node_positions(NUM_NODES, room["w"], room["h"])
+
+
 def clamp(v, a, b):
     return a if v < a else b if v > b else v
 
@@ -92,10 +114,23 @@ class Kalman2D:
         F = np.array([[1, 0, dt, 0], [0, 1, 0, dt],
                       [0, 0, 1, 0],  [0, 0, 0, 1]], dtype=float)
         sa = 1.5
-        G = np.array([dt * dt / 2, dt * dt / 2, dt, dt])
-        Q = np.outer(G, G) * sa * sa
+        # Independent white-acceleration noise on x and y (state = [x, y, vx, vy]).
+        # A single G = [dt²/2, dt²/2, dt, dt] would make x/y accelerations perfectly
+        # correlated, so the filter could only "turn" along the (1,1) diagonal.
+        q_pp = dt ** 4 / 4
+        q_pv = dt ** 3 / 2
+        q_vv = dt ** 2
+        Q = np.array([[q_pp, 0, q_pv, 0],
+                      [0, q_pp, 0, q_pv],
+                      [q_pv, 0, q_vv, 0],
+                      [0, q_pv, 0, q_vv]], dtype=float) * sa * sa
         self.x = F @ self.x
         self.P = F @ self.P @ F.T + Q
+
+    def reset(self):
+        self.x = np.zeros(4)
+        self.P = np.eye(4) * 10.0
+        self.ready = False
 
     def update(self, z, R):
         y = z - self.H @ self.x
@@ -110,8 +145,11 @@ def apply_config(d):
     global node_pos, room
     try:
         if "room" in d and isinstance(d["room"], dict):
-            room["w"] = float(d["room"].get("w", room["w"]))
-            room["h"] = float(d["room"].get("h", room["h"]))
+            w = float(d["room"].get("w", room["w"]))
+            h = float(d["room"].get("h", room["h"]))
+            if not (math.isfinite(w) and math.isfinite(h) and w > 0 and h > 0):
+                raise ValueError(f"bad room size {w}x{h}")
+            room["w"], room["h"] = w, h
         if "nodes" in d and isinstance(d["nodes"], list) and len(d["nodes"]) > 0:
             client_nodes = d["nodes"]
             new_pos = []
@@ -138,31 +176,49 @@ def normalize():
             continue
 
         e = energy[i]
-        # First sample after connection: initialize baseline from real energy, not dummy 0.0
+        # The firmware reports e = 0.0 until its RSSI buffer has >= 15 samples.
+        # That is "not ready", not a quiet room: learning it as the baseline would make
+        # the threshold ~0 for minutes (it only rises slowly) -> false presence.
+        if e <= 0.0:
+            ne[i] = 0.0
+            continue
+        # First real sample after connection: initialize baseline from it
         if ne_min[i] is None:
             ne_min[i] = e
             ne_max[i] = e + MIN_SPAN
-            ne[i] = 0.0
-            continue
+            ne_count[i] = 0
 
-        # Baseline learning: floor drops quickly, rises very slowly
+        # Baseline = low envelope: drops quickly, rises very slowly (so a person who is
+        # present can't drag it up and "disappear" within seconds)
         if e < ne_min[i]:
             ne_min[i] += 0.08 * (e - ne_min[i])
         else:
-            ne_min[i] += 0.0015 * (e - ne_min[i])
+            ne_min[i] += 0.0005 * (e - ne_min[i])   # ~100 s at 20 Hz, same rate as the firmware
+
+        ne_count[i] += 1
+        if ne_count[i] <= WARMUP:
+            ne[i] = 0.0
+            continue
+
+        th = max(ne_min[i] * REL_THR, ne_min[i] + MIN_MARGIN)
 
         # Peak tracking: rises immediately on motion, decays slowly
         if e > ne_max[i]:
             ne_max[i] = e
         else:
             ne_max[i] += 0.0020 * (e - ne_max[i])
+        if ne_max[i] < th + MIN_SPAN:
+            ne_max[i] = th + MIN_SPAN
 
-        # Enforce minimum span so quiet room thermal noise doesn't blow up to 1.0
-        if ne_max[i] < ne_min[i] + MIN_SPAN:
-            ne_max[i] = ne_min[i] + MIN_SPAN
-
-        ne[i] = clamp((e - ne_min[i]) / (ne_max[i] - ne_min[i]), 0.0, 1.0)
+        # 0 = below the presence threshold, 1 = at the learned peak
+        ne[i] = clamp((e - th) / (ne_max[i] - th), 0.0, 1.0)
     return ne
+
+
+def reset_calibration(i):
+    ne_min[i] = None
+    ne_max[i] = 1e-3
+    ne_count[i] = 0
 
 
 def measure(ne):
@@ -206,6 +262,7 @@ async def node_task(i):
         try:
             async with websockets.connect(url, ping_interval=None) as ws:
                 print(f"[node {i}] connected to {url}")
+                reset_calibration(i)       # the room may have changed while the node was away
                 async for msg in ws:
                     try:
                         d = json.loads(msg)
@@ -299,6 +356,7 @@ async def filter_loop(model, classes):
     last = time.time()
     crouch = 0.0
     peak = 1e-3
+    absent = 0
     hist = deque(maxlen=WINDOW)
     while True:
         await asyncio.sleep(1.0 / RATE_HZ)
@@ -312,6 +370,12 @@ async def filter_loop(model, classes):
         maxn = max(ne) if len(ne) else 0.0
         sumn = sum(ne)
         present = maxn > PRESENCE
+
+        # Person gone for > 2 s: forget the old track, so a re-appearance elsewhere
+        # starts from the new measurement instead of sliding over from the old spot.
+        absent = 0 if present else absent + 1
+        if absent > 2 * RATE_HZ and kf.ready:
+            kf.reset()
 
         kf.predict(dt)
         z = measure(ne) if present else None
@@ -328,8 +392,10 @@ async def filter_loop(model, classes):
             if np.trace(kf.P) > 100.0:
                 kf.P *= 0.98
 
-        x = clamp(float(kf.x[0]), 0.0, room["w"])
-        y = clamp(float(kf.x[1]), 0.0, room["h"])
+        # Keep the state itself inside the room (not only the reported value)
+        kf.x[0] = clamp(float(kf.x[0]), 0.0, room["w"])
+        kf.x[1] = clamp(float(kf.x[1]), 0.0, room["h"])
+        x, y = float(kf.x[0]), float(kf.x[1])
 
         # --- AI: activity classification ---
         activity, act_conf = None, 0.0
@@ -404,6 +470,9 @@ async def record_main(label, seconds):
     for t in tasks:
         t.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
+    if not rows:
+        print("Nothing recorded (--seconds must be > 0).")
+        return
 
     new = not os.path.exists(DATASET)
     with open(DATASET, "a", newline="") as f:
@@ -471,9 +540,13 @@ if __name__ == "__main__":
     ap.add_argument("--seconds", type=int, default=30, help="recording duration")
     ap.add_argument("--train", action="store_true", help="train the neural network with dataset.csv")
     ap.add_argument("--sim", action="store_true", help="simulated data (test without the nodes)")
+    ap.add_argument("--hosts", help="comma-separated node IPs/hostnames, e.g. sgpcsi-0.local,sgpcsi-1.local,sgpcsi-2.local")
     args = ap.parse_args()
+    if args.hosts:
+        set_hosts([h.strip() for h in args.hosts.split(",") if h.strip()])
 
     print("=== SGP CSI TRACKER + AI ===")
+    print(f"Nodes ({NUM_NODES}): {', '.join(NODE_HOSTS)}")
     try:
         if args.train:
             do_train()
